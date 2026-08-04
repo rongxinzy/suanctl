@@ -1,0 +1,33 @@
+[
+  {
+    "pid": 101,
+    "args": [
+      "/opt/llama.cpp/llama-server",
+      "--model",
+      "model.gguf",
+      "--host",
+      "0.0.0.0",
+      "--port",
+      "8000"
+    ]
+  },
+  {
+    "pid": 102,
+    "args": [
+      "python",
+      "-m",
+      "vllm.entrypoints.openai.api_server",
+      "--port=8001"
+    ]
+  },
+  {
+    "pid": 103,
+    "args": [
+      "python3",
+      "-m",
+      "sglang.launch_server",
+      "-p",
+      "8002"
+    ]
+  }
+]

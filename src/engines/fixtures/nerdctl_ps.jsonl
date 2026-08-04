@@ -1,0 +1,1 @@
+{"ID":"1234567890abcdef","Names":"vllm","Image":"vllm/vllm-openai:latest","Command":"python -m vllm.entrypoints.openai.api_server","Ports":"8000/tcp"}

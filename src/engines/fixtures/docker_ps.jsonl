@@ -1,0 +1,2 @@
+{"ID":"abcdef0123456789","Names":"llama","Image":"ghcr.io/ggerganov/llama.cpp:server","Command":"llama-server --model model.gguf","Ports":"127.0.0.1:8000->8000/tcp"}
+{"ID":"fedcba9876543210","Names":"vllm","Image":"vllm/vllm-openai:latest","Command":"vllm serve model --api-key secret-token","Ports":""}

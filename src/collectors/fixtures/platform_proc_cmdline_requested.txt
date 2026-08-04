@@ -1,0 +1,1 @@
+BOOT_IMAGE=/vmlinuz-6.8.0 intel_iommu=on iommu=pt quiet

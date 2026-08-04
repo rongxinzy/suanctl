@@ -1,0 +1,1 @@
+[{"Id":"0123456789abcdef","Names":["sglang"],"Image":"registry/sglang:latest","Command":["python","-m","sglang.launch_server"],"Ports":[{"IP":"::1","PublicPort":3000,"PrivatePort":3000,"Type":"tcp"}]}]

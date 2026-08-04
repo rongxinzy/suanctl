@@ -1,0 +1,9 @@
+0000:00:01.0 PCI bridge [0604]: Broadcom Inc. PCIe Switch Upstream Port [14e4:16d7]
+	Capabilities: [180] Access Control Services
+		ACSCap: SrcValid+ TransBlk- ReqRedir+ CmpltRedir+ UpstreamFwd+ EgressCtrl+ DirectTrans+
+		ACSCtl: SrcValid+ TransBlk- ReqRedir+ CmpltRedir+ UpstreamFwd+ EgressCtrl+ DirectTrans+
+0000:01:00.0 PCI bridge [0604]: Broadcom Inc. PCIe Switch Downstream Port [14e4:16d8]
+0000:02:00.0 RAID bus controller [0104]: Broadcom / LSI MegaRAID SAS-4 [1000:00af]
+	Subsystem: Broadcom MegaRAID 9560-16i [1000:0001]
+0000:02:00.1 Serial Attached SCSI controller [0107]: Broadcom / LSI SAS3416 [1000:00d1]
+	Subsystem: Broadcom HBA [1000:0002]

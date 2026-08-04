@@ -1,0 +1,3 @@
+0000:02:00.0 Ethernet controller: Test device without ACS
+	Subsystem: Test system
+	Capabilities: [40] Express (v2) Endpoint
