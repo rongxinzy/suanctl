@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    name: fmt + clippy + test + e2e
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (strict)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Unit tests + e2e
+        run: cargo test
+
+      - name: Release build
+        run: cargo build --release
+
+  build-musl:
+    name: musl static build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain with musl target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Static release build (musl)
+        run: cargo build --release --target x86_64-unknown-linux-musl
+
+      - name: Verify static linkage
+        run: file target/x86_64-unknown-linux-musl/release/suanctl | grep -E "static"

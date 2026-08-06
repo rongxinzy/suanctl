@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::domain::{
-    CollectionIssue, HealthStatus, IommuAcsOverride, IommuRequested, IommuSnapshot,
+    AcsSummary, CollectionIssue, HealthStatus, IommuAcsOverride, IommuRequested, IommuSnapshot,
     NvidiaDriverSnapshot, PciDeviceSnapshot, PlatformSnapshot,
 };
 
@@ -159,6 +159,7 @@ impl<R: CommandRunner + Clone> LinuxPlatformCollector<R> {
             .into_iter()
             .chain(issues.iter().map(|issue| issue.status)),
         );
+        let acs_summary = summarize_acs(&pcie.devices);
         Ok(PlatformSnapshot {
             iommu,
             nvidia_driver,
@@ -166,6 +167,8 @@ impl<R: CommandRunner + Clone> LinuxPlatformCollector<R> {
             pci_devices: pcie.devices,
             p2p: Some(p2p.snapshot),
             storage: Some(storage),
+            plugins: Vec::new(),
+            acs_summary,
             issues,
             status,
         })
@@ -185,13 +188,87 @@ impl<R: CommandRunner + Clone> PlatformCollector for LinuxPlatformCollector<R> {
     }
 }
 
+/// 汇总 PCI 设备的 ACS 状态：支持 ACS 能力（含已知无 ACS）的设备中，
+/// 开启任一隔离机制（ACSCtl 任意位为 true）与全部关闭的计数。
+fn summarize_acs(devices: &[PciDeviceSnapshot]) -> Option<AcsSummary> {
+    if devices.is_empty() {
+        return None;
+    }
+    let mut supported = 0usize;
+    let mut enabled = 0usize;
+    let mut disabled = 0usize;
+    for device in devices {
+        let Some(capability) = device.acs.as_ref().and_then(|acs| acs.capability.as_ref()) else {
+            continue;
+        };
+        if !capability.present {
+            continue;
+        }
+        supported += 1;
+        let controls = device.acs.as_ref().and_then(|acs| acs.control.as_ref());
+        let any_enabled = controls.is_some_and(|control| {
+            control.source_validation == Some(true)
+                || control.translation_blocking == Some(true)
+                || control.p2p_request_redirect == Some(true)
+                || control.completion_redirect == Some(true)
+                || control.upstream_forwarding == Some(true)
+                || control.egress_control == Some(true)
+                || control.direct_translated_p2p == Some(true)
+        });
+        if any_enabled {
+            enabled += 1;
+        } else {
+            disabled += 1;
+        }
+    }
+    if supported == 0 && enabled == 0 && disabled == 0 {
+        None
+    } else {
+        Some(AcsSummary {
+            supported,
+            enabled,
+            disabled,
+        })
+    }
+}
+
 fn collect_nvidia_smi_header<R: CommandRunner>(
     runner: &R,
     timeout: Duration,
     stdout_limit: usize,
     stderr_limit: usize,
 ) -> (Option<NvidiaSmiHeader>, Vec<CollectionIssue>) {
-    let mut request = CommandRequest::new("nvidia-smi", std::iter::empty::<String>());
+    // nvidia-smi 不可用时尝试 querygpu（改名体）。
+    match run_smi_header(runner, "nvidia-smi", timeout, stdout_limit, stderr_limit) {
+        (Some(header), issues) => (Some(header), issues),
+        (None, mut primary_issues) => {
+            let (fallback, fallback_issues) =
+                run_smi_header(runner, "querygpu", timeout, stdout_limit, stderr_limit);
+            if fallback.is_some() {
+                return (fallback, fallback_issues);
+            }
+            // 两者均失败：报出 nvidia-smi 的原始问题，并在其中补充 querygpu 信息。
+            let querygpu_hint = fallback_issues
+                .first()
+                .map_or("querygpu 亦不可用", |issue| &issue.message);
+            primary_issues.push(platform_issue(
+                "nvidia_smi_unavailable",
+                HealthStatus::Unavailable,
+                format!("nvidia-smi 与 querygpu 均不可用（{querygpu_hint}）"),
+            ));
+            (None, primary_issues)
+        }
+    }
+}
+
+fn run_smi_header<R: CommandRunner>(
+    runner: &R,
+    tool: &str,
+    timeout: Duration,
+    stdout_limit: usize,
+    stderr_limit: usize,
+) -> (Option<NvidiaSmiHeader>, Vec<CollectionIssue>) {
+    let mut request = CommandRequest::new(tool, std::iter::empty::<String>());
     request.timeout = timeout;
     request.stdout_limit = stdout_limit;
     request.stderr_limit = stderr_limit;
@@ -203,7 +280,7 @@ fn collect_nvidia_smi_header<R: CommandRunner>(
                 vec![platform_issue(
                     "nvidia_smi_unavailable",
                     HealthStatus::Unavailable,
-                    format!("nvidia-smi 不可用：{}", error.message),
+                    format!("{tool} 不可用：{}", error.message),
                 )],
             )
         }
@@ -214,7 +291,7 @@ fn collect_nvidia_smi_header<R: CommandRunner>(
             vec![platform_issue(
                 "nvidia_smi_timeout",
                 HealthStatus::Warning,
-                "nvidia-smi 超时，驱动和 driver_reported_max_cuda 保持未知",
+                format!("{tool} 超时，驱动和 driver_reported_max_cuda 保持未知"),
             )],
         );
     }
@@ -224,7 +301,7 @@ fn collect_nvidia_smi_header<R: CommandRunner>(
             vec![platform_issue(
                 "nvidia_smi_output_too_large",
                 HealthStatus::Warning,
-                "nvidia-smi 默认头部输出超过安全上限",
+                format!("{tool} 默认头部输出超过安全上限"),
             )],
         );
     }
@@ -234,7 +311,7 @@ fn collect_nvidia_smi_header<R: CommandRunner>(
             vec![platform_issue(
                 "nvidia_smi_failed",
                 HealthStatus::Warning,
-                format!("nvidia-smi 失败：{}", output.stderr.trim()),
+                format!("{tool} 失败：{}", output.stderr.trim()),
             )],
         );
     }
@@ -245,7 +322,7 @@ fn collect_nvidia_smi_header<R: CommandRunner>(
             vec![platform_issue(
                 "nvidia_smi_header_unparsed",
                 HealthStatus::Warning,
-                "nvidia-smi 命令成功，但默认头部没有可解析的 Driver/CUDA Version",
+                format!("{tool} 命令成功，但默认头部没有可解析的 Driver/CUDA Version"),
             )],
         );
     }
@@ -552,10 +629,146 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        collect_iommu_snapshot, parse_acs_override, parse_iommu_requested,
-        parse_kernel_module_version, parse_proc_modules,
+        collect_iommu_snapshot, collect_nvidia_smi_header, parse_acs_override,
+        parse_iommu_requested, parse_kernel_module_version, parse_proc_modules, summarize_acs,
     };
-    use crate::domain::HealthStatus;
+    use crate::collectors::command::{CommandOutput, CommandRequest, CommandRunner};
+    use crate::domain::{
+        AcsCapability, AcsControl, AcsSnapshot, HealthStatus, PciDeviceRole, PciDeviceSnapshot,
+    };
+
+    /// 按程序名分流的 FakeRunner（nvidia-smi → querygpu fallback 测试用）。
+    struct FakeRunner {
+        by_program: std::collections::BTreeMap<
+            String,
+            std::sync::Arc<Result<CommandOutput, crate::collectors::CollectorError>>,
+        >,
+    }
+
+    impl CommandRunner for FakeRunner {
+        fn run(
+            &self,
+            request: &CommandRequest,
+        ) -> Result<CommandOutput, crate::collectors::CollectorError> {
+            self.by_program
+                .get(&request.program)
+                .map(|response| response.as_ref().clone())
+                .unwrap_or_else(|| {
+                    Err(crate::collectors::CollectorError::new(
+                        "command",
+                        "spawn_failed",
+                        format!("{} 不存在", request.program),
+                    ))
+                })
+        }
+    }
+
+    fn smi_output(stdout: &str) -> CommandOutput {
+        CommandOutput {
+            success: true,
+            exit_code: Some(0),
+            stdout: stdout.to_owned(),
+            stderr: String::new(),
+            timed_out: false,
+            stdout_truncated: false,
+            stderr_truncated: false,
+        }
+    }
+
+    #[test]
+    fn smi_header_falls_back_to_querygpu_when_nvidia_smi_missing() {
+        let runner = FakeRunner {
+            by_program: std::collections::BTreeMap::from([
+                (
+                    "querygpu".to_owned(),
+                    std::sync::Arc::new(Ok(smi_output(
+                        "Mon Aug  4 12:00:00 2026\n+-----------------------------------------------------------------------------+\n| NVIDIA-SMI 595.58.03    Driver Version: 595.58.03    CUDA Version: 12.4     |\n+-----------------------------------------------------------------------------+\n",
+                    ))),
+                ),
+            ]),
+        };
+        let (header, issues) =
+            collect_nvidia_smi_header(&runner, std::time::Duration::from_secs(2), 4096, 4096);
+        let header = header.expect("querygpu 应提供头部");
+        assert_eq!(
+            header.driver_version.as_deref(),
+            Some("595.58.03"),
+            "querygpu 改名体输出应被解析"
+        );
+        assert!(issues.is_empty());
+    }
+
+    fn acs_device(bdf: &str, present: bool, p2p_redirect: Option<bool>) -> PciDeviceSnapshot {
+        PciDeviceSnapshot {
+            bdf: bdf.to_owned(),
+            vendor: None,
+            device: None,
+            class: Some("0x060400".to_owned()),
+            driver: None,
+            numa_node: None,
+            iommu_group: None,
+            current_link_speed: None,
+            current_link_width: None,
+            current_link_gen: None,
+            current_theoretical_bandwidth_mb_s: None,
+            max_link_speed: None,
+            max_link_width: None,
+            max_link_gen: None,
+            max_theoretical_bandwidth_mb_s: None,
+            acs: Some(AcsSnapshot {
+                capability: Some(AcsCapability {
+                    present,
+                    source_validation: None,
+                    translation_blocking: None,
+                    p2p_request_redirect: None,
+                    completion_redirect: None,
+                    upstream_forwarding: None,
+                    egress_control: None,
+                    direct_translated_p2p: None,
+                }),
+                control: Some(AcsControl {
+                    source_validation: None,
+                    translation_blocking: None,
+                    p2p_request_redirect: p2p_redirect,
+                    completion_redirect: None,
+                    upstream_forwarding: None,
+                    egress_control: None,
+                    direct_translated_p2p: None,
+                }),
+            }),
+            role: Some(PciDeviceRole::Bridge),
+            class_name: None,
+            vendor_name: None,
+            device_name: None,
+            subsystem_vendor: None,
+            subsystem_device: None,
+            subsystem_name: None,
+            parent_bdf: None,
+            downstream_bdfs: Vec::new(),
+            mmio_windows: Vec::new(),
+            status: HealthStatus::Healthy,
+        }
+    }
+
+    #[test]
+    fn acs_summary_counts_supported_enabled_and_disabled() {
+        // 支持 ACS 的设备 3 台：2 台开启隔离（任一位 true），1 台全部关闭；1 台无 ACS 能力。
+        let devices = vec![
+            acs_device("0000:00:01.0", true, Some(true)),
+            acs_device("0000:00:02.0", true, Some(false)),
+            acs_device("0000:00:03.0", true, None),
+            acs_device("0000:01:00.0", false, None),
+        ];
+        let summary = summarize_acs(&devices).expect("应有统计");
+        assert_eq!(summary.supported, 3);
+        assert_eq!(summary.enabled, 1);
+        assert_eq!(summary.disabled, 2);
+    }
+
+    #[test]
+    fn acs_summary_empty_devices_is_none() {
+        assert!(summarize_acs(&[]).is_none());
+    }
 
     #[test]
     fn iommu_requested_without_groups_is_not_reported_as_effective() {

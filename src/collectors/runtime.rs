@@ -2,7 +2,9 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::collectors::{GpuCollector, HostCollector, PlatformCollector};
+use crate::collectors::{
+    logs::LogsCollector, plugin::PluginCollector, GpuCollector, HostCollector, PlatformCollector,
+};
 use crate::diagnosis::diagnose;
 use crate::domain::{
     CollectionIssue, DashboardSnapshot, DataSource, EngineKind, HealthStatus, HostSnapshot,
@@ -27,6 +29,8 @@ pub struct RuntimeCollector {
     host: Box<dyn HostCollector>,
     gpu: Box<dyn GpuCollector>,
     platform: Box<dyn PlatformCollector>,
+    logs: Box<dyn LogsCollector>,
+    plugin: Box<dyn PluginCollector>,
     providers: Vec<Box<dyn DiscoveryProvider>>,
     pub configured_endpoints: Vec<ConfiguredEndpoint>,
     probe_services: bool,
@@ -44,6 +48,8 @@ impl RuntimeCollector {
             host: Box::new(crate::collectors::host::LinuxHostCollector::default()),
             gpu: Box::new(crate::collectors::gpu::NvidiaSmiCollector::default()),
             platform: Box::new(crate::collectors::platform::LinuxPlatformCollector::default()),
+            logs: Box::new(crate::collectors::logs::LinuxLogCollector::default()),
+            plugin: Box::new(crate::collectors::plugin::UnavailablePluginCollector),
             providers: vec![
                 Box::new(HostProcessProvider::default()),
                 Box::new(ContainerProvider::default()),
@@ -51,6 +57,31 @@ impl RuntimeCollector {
             configured_endpoints: Vec::new(),
             probe_services: true,
         }
+    }
+
+    /// 按配置文件装配：追加日志异常模式等。CLI 参数优先级高于配置。
+    pub fn with_config(mut self, config: &crate::config::SuanctlConfig) -> Self {
+        match config.to_log_patterns() {
+            Ok(patterns) if !patterns.is_empty() => {
+                self.logs = Box::new(
+                    crate::collectors::logs::LinuxLogCollector::default()
+                        .with_extra_patterns(patterns),
+                );
+            }
+            Ok(_) => {}
+            Err(error) => {
+                // 配置已在校验阶段拦截非法值；此处仅防御性降级。
+                eprintln!("日志模式配置无效，使用内置模式：{error}");
+            }
+        }
+        if config.plugins.enabled {
+            let dir = config.plugins.dir.clone().unwrap_or_else(|| {
+                crate::config::default_plugins_dir()
+                    .unwrap_or_else(|| std::path::PathBuf::from(".suanctl/plugins"))
+            });
+            self.plugin = Box::new(crate::collectors::plugin::ShellPluginCollector::new(dir));
+        }
+        self
     }
 
     pub fn with_configured_endpoints(mut self, endpoints: Vec<ConfiguredEndpoint>) -> Self {
@@ -63,6 +94,7 @@ impl RuntimeCollector {
     }
 
     /// 供纯构造测试和上层受控装配使用；不会读取系统或启动探针。
+    /// 日志采集默认不可用，避免测试依赖真实系统日志。
     pub fn from_sources(
         host: Box<dyn HostCollector>,
         gpu: Box<dyn GpuCollector>,
@@ -73,6 +105,8 @@ impl RuntimeCollector {
             host,
             gpu,
             platform,
+            logs: Box::new(crate::collectors::logs::UnavailableLogsCollector),
+            plugin: Box::new(crate::collectors::plugin::UnavailablePluginCollector),
             providers,
             configured_endpoints: Vec::new(),
             probe_services: false,
@@ -98,12 +132,17 @@ impl RuntimeCollector {
             }
         };
         let platform = match self.platform.collect_platform() {
-            Ok(platform) => Some(platform),
+            Ok(mut platform) => {
+                platform.plugins = self.plugin.collect_plugins();
+                Some(platform)
+            }
             Err(error) => {
                 issues.push(collection_issue(error.issue()));
                 None
             }
         };
+        let logs = self.logs.collect_logs();
+        issues.extend(logs.issues.iter().cloned().map(collection_issue));
 
         let discovery = merge_results(self.providers.iter().map(|provider| provider.discover()));
         issues.extend(discovery.issues.into_iter().map(collection_issue));
@@ -130,6 +169,8 @@ impl RuntimeCollector {
             services,
             findings: Vec::new(),
             platform,
+            logs: Some(logs),
+            remote: None,
         };
         snapshot.findings = diagnose(&snapshot);
         let status = runtime_status(&snapshot, &issues);
@@ -222,6 +263,9 @@ pub fn runtime_status(snapshot: &DashboardSnapshot, issues: &[CollectionIssue]) 
         statuses.push(platform.status);
     } else {
         statuses.push(HealthStatus::Unavailable);
+    }
+    if let Some(logs) = &snapshot.logs {
+        statuses.push(logs.status);
     }
     statuses.extend(snapshot.findings.iter().map(|finding| finding.status));
     statuses.extend(

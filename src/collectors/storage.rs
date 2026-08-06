@@ -360,6 +360,7 @@ mod tests {
             subsystem_name: None,
             parent_bdf: None,
             downstream_bdfs: Vec::new(),
+            mmio_windows: Vec::new(),
             status: HealthStatus::Healthy,
         }
     }

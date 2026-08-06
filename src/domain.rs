@@ -43,7 +43,7 @@ impl DataSource {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UiPage {
     Overview,
@@ -51,15 +51,19 @@ pub enum UiPage {
     Services,
     Diagnosis,
     Reports,
+    Logs,
+    Remote,
 }
 
 impl UiPage {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 7] = [
         Self::Overview,
         Self::Gpu,
         Self::Services,
         Self::Diagnosis,
         Self::Reports,
+        Self::Logs,
+        Self::Remote,
     ];
 
     pub const fn label(self) -> &'static str {
@@ -69,6 +73,8 @@ impl UiPage {
             Self::Services => "服务",
             Self::Diagnosis => "诊断",
             Self::Reports => "报告",
+            Self::Logs => "日志",
+            Self::Remote => "远程",
         }
     }
 
@@ -79,6 +85,8 @@ impl UiPage {
             Self::Services => 2,
             Self::Diagnosis => 3,
             Self::Reports => 4,
+            Self::Logs => 5,
+            Self::Remote => 6,
         }
     }
 
@@ -89,6 +97,8 @@ impl UiPage {
             '3' => Some(Self::Services),
             '4' => Some(Self::Diagnosis),
             '5' => Some(Self::Reports),
+            '6' => Some(Self::Logs),
+            '7' => Some(Self::Remote),
             _ => None,
         }
     }
@@ -150,6 +160,9 @@ pub struct GpuSnapshot {
     pub reset_required: Option<bool>,
     #[serde(default)]
     pub xid_codes: Option<Vec<u32>>,
+    /// 实际使用的 SMI 工具（"nvidia-smi" 或其改名体 "querygpu"）。
+    #[serde(default)]
+    pub smi_tool: Option<String>,
 }
 
 /// 文件、命令或 sysfs 观测到的存在性。`Unknown` 表示没有足够证据，
@@ -172,6 +185,18 @@ pub enum LocalProbeStatus {
     Unavailable,
     #[default]
     Unknown,
+}
+
+impl LocalProbeStatus {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::NotAttempted => "未尝试",
+            Self::Succeeded => "可用",
+            Self::Failed => "失败",
+            Self::Unavailable => "不可用",
+            Self::Unknown => "未知",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -373,8 +398,56 @@ pub struct PciDeviceSnapshot {
     pub parent_bdf: Option<String>,
     #[serde(default)]
     pub downstream_bdfs: Vec<String>,
+    /// MMIO 窗口（/sys/bus/pci/devices/*/resource 解析）。非 root 读取可能为空。
+    #[serde(default)]
+    pub mmio_windows: Vec<PciMmioWindow>,
     #[serde(default)]
     pub status: HealthStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PciMmioKind {
+    /// 32 位内存 BAR。
+    Mmio32,
+    /// 64 位内存 BAR（flags bit1 置位）。
+    Mmio64,
+    /// I/O 端口 BAR（flags bit0 置位）。
+    IoPort,
+    /// 仅凭 flags 无法归类的窗口。
+    Other,
+}
+
+impl PciMmioKind {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Mmio32 => "MMIO32",
+            Self::Mmio64 => "MMIO64",
+            Self::IoPort => "I/O",
+            Self::Other => "其他",
+        }
+    }
+}
+
+/// 单个 PCI 资源窗口（来自 sysfs resource 文件的一行）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PciMmioWindow {
+    /// resource 文件中的窗口索引（0..=5 为 BAR，6 为 ROM，7 为 bridge 窗口）。
+    pub index: u8,
+    pub start: u64,
+    pub end: u64,
+    pub size: u64,
+    pub kind: PciMmioKind,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcsSummary {
+    /// 暴露 ACS 能力（含已知无 ACS）的 PCI 设备数。
+    pub supported: usize,
+    /// ACSCtl 中开启任一隔离机制的设备数。
+    pub enabled: usize,
+    /// 有 ACS 能力但全部隔离机制均关闭的设备数。
+    pub disabled: usize,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -661,6 +734,12 @@ pub struct PlatformSnapshot {
     /// backwards compatible.
     #[serde(default)]
     pub storage: Option<StorageFabricSnapshot>,
+    /// 用户插件（只读脚本）的观测结果。
+    #[serde(default)]
+    pub plugins: Vec<PluginSnapshot>,
+    /// ACS 开启/关闭统计（遍历 pci_devices 的 ACSCtl）。
+    #[serde(default)]
+    pub acs_summary: Option<AcsSummary>,
     #[serde(default)]
     pub issues: Vec<CollectionIssue>,
     #[serde(default)]
@@ -685,6 +764,115 @@ impl EngineKind {
             Self::Unknown => "未知引擎",
         }
     }
+}
+
+/// 系统日志中的一条异常匹配聚合。来自 llama-test-matrix blackbox 触发模式的
+/// 提炼：只保留匹配的日志模式、数量与样例行，不保存完整日志流。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogPatternMatch {
+    /// 稳定模式标识，例如 "xid" / "nvrm" / "pcie_aer"。
+    pub pattern: String,
+    pub severity: HealthStatus,
+    pub count: usize,
+    /// 命中的日志来源（dmesg / journalctl_kernel / kern.log …）。
+    #[serde(default)]
+    pub sources: Vec<String>,
+    /// 最多保留的样例行。
+    #[serde(default)]
+    pub examples: Vec<String>,
+}
+
+/// 单个系统日志源的只读观测。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogSourceSnapshot {
+    pub name: String,
+    pub probe_status: LocalProbeStatus,
+    /// 实际使用的只读命令（证据），例如 "dmesg -T"。
+    #[serde(default)]
+    pub command: Option<String>,
+    /// 文件型来源的绝对路径。
+    #[serde(default)]
+    pub path: Option<String>,
+    /// 采集到的尾部日志行（每行截断，数量受限）。
+    #[serde(default)]
+    pub lines_tail: Vec<String>,
+    /// 尾部行数是否超出上限被截断。
+    #[serde(default)]
+    pub truncated: bool,
+    /// 该来源命中的异常模式数。
+    #[serde(default)]
+    pub match_count: usize,
+}
+
+/// 用户插件（只读脚本）的一次观测结果。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginSnapshot {
+    pub name: String,
+    /// 插件脚本路径。
+    #[serde(default)]
+    pub path: Option<String>,
+    pub probe_status: LocalProbeStatus,
+    /// 脚本输出尾部（每行截断，数量受限）。
+    #[serde(default)]
+    pub output_tail: Vec<String>,
+    #[serde(default)]
+    pub truncated: bool,
+    #[serde(default)]
+    pub status: HealthStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogSnapshot {
+    #[serde(default)]
+    pub sources: Vec<LogSourceSnapshot>,
+    /// 跨来源聚合的异常模式匹配。
+    #[serde(default)]
+    pub matches: Vec<LogPatternMatch>,
+    #[serde(default)]
+    pub issues: Vec<CollectionIssue>,
+    #[serde(default)]
+    pub status: HealthStatus,
+}
+
+/// 单台远程设备的只读扫描结果。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteHostSnapshot {
+    /// ~/.ssh/config 中的别名。
+    pub alias: String,
+    #[serde(default)]
+    pub hostname: Option<String>,
+    /// 免密可达性（ssh BatchMode 探测）。
+    pub reachable: bool,
+    /// sudo 权限预检测结果（sudo -n true）。
+    pub sudo_available: bool,
+    /// 是否因 sudo 不可用而降级（跳过了系统级采集项）。
+    pub degraded: bool,
+    /// 主机/负载信息摘要（hostname/uname/os/uptime/loadavg）。
+    #[serde(default)]
+    pub host_info: Option<String>,
+    /// nvidia-smi GPU 摘要。
+    #[serde(default)]
+    pub gpu_summary: Option<String>,
+    /// 内核日志尾部（需要 sudo 或 dmesg 可读）。
+    #[serde(default)]
+    pub kernel_log_tail: Vec<String>,
+    #[serde(default)]
+    pub issues: Vec<CollectionIssue>,
+    #[serde(default)]
+    pub status: HealthStatus,
+}
+
+/// 远程设备扫描快照。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteScanSnapshot {
+    #[serde(default)]
+    pub scanned_at: u64,
+    #[serde(default)]
+    pub hosts: Vec<RemoteHostSnapshot>,
+    #[serde(default)]
+    pub issues: Vec<CollectionIssue>,
+    #[serde(default)]
+    pub status: HealthStatus,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -864,6 +1052,9 @@ pub struct DiagnosisFinding {
     pub object: String,
     pub summary: String,
     pub evidence: Vec<String>,
+    /// 可执行的修复建议（只读建议，不代执行），例如推荐的内核参数。
+    #[serde(default)]
+    pub suggestion: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -930,6 +1121,12 @@ pub struct DashboardSnapshot {
     /// Real platform collection is optional so old/demo snapshots remain valid.
     #[serde(default)]
     pub platform: Option<PlatformSnapshot>,
+    /// 系统日志只读观测。缺失表示旧快照或采集未启用，保持向后兼容。
+    #[serde(default)]
+    pub logs: Option<LogSnapshot>,
+    /// 远程设备扫描结果（ssh config 免密主机）。
+    #[serde(default)]
+    pub remote: Option<RemoteScanSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1043,10 +1240,12 @@ mod tests {
 
     #[test]
     fn page_order_and_labels_are_stable() {
-        assert_eq!(UiPage::ALL.len(), 5);
+        assert_eq!(UiPage::ALL.len(), 7);
         assert_eq!(UiPage::from_digit('3'), Some(UiPage::Services));
+        assert_eq!(UiPage::from_digit('6'), Some(UiPage::Logs));
+        assert_eq!(UiPage::from_digit('7'), Some(UiPage::Remote));
         assert_eq!(UiPage::Overview.next(), UiPage::Gpu);
-        assert_eq!(UiPage::Overview.previous(), UiPage::Reports);
+        assert_eq!(UiPage::Overview.previous(), UiPage::Remote);
         assert_eq!(DataSource::Demo.label(), "演示数据");
     }
 }

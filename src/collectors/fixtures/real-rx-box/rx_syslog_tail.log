@@ -1,0 +1,40 @@
+2026-08-04T17:41:59.937934+08:00 rx-box dauadm-server[1479]: 2026/08/04 17:41:59 Successfully connected to serial port /dev/ttyS1
+2026-08-04T17:41:59.937987+08:00 rx-box dauadm-server[1479]: 2026/08/04 17:41:59 The origin GPU INFO before filled is 2
+2026-08-04T17:41:59.938033+08:00 rx-box dauadm-server[1479]: 2026/08/04 17:41:59 The GPU number after filled is 4
+2026-08-04T17:42:02.656163+08:00 rx-box dauadm-server[1479]: {"time":"2026-08-04T17:42:02.655567144+08:00","level":"INFO","msg":"LCD info sent successfully"}
+2026-08-04T17:42:02.714983+08:00 rx-box dauadm-server[1479]: {"time":"2026-08-04T17:42:02.71490171+08:00","level":"INFO","msg":"Memory info sent successfully"}
+2026-08-04T17:42:02.715253+08:00 rx-box dauadm-server[1479]: 2026/08/04 17:42:02 Successfully connected to serial port /dev/ttyS1
+2026-08-04T17:42:02.715321+08:00 rx-box dauadm-server[1479]: 2026/08/04 17:42:02 The origin GPU INFO before filled is 2
+2026-08-04T17:42:02.715377+08:00 rx-box dauadm-server[1479]: 2026/08/04 17:42:02 The GPU number after filled is 4
+2026-08-04T17:42:04.500396+08:00 rx-box systemd[1]: kubelet.service: Scheduled restart job, restart counter is at 2359.
+2026-08-04T17:42:04.513562+08:00 rx-box systemd[1]: Started kubelet.service - kubelet: The Kubernetes Node Agent.
+2026-08-04T17:42:04.563090+08:00 rx-box kubelet[1397268]: Flag --pod-infra-container-image has been deprecated, will be removed in 1.35. Image garbage collector will get sandbox image information from CRI.
+2026-08-04T17:42:04.563257+08:00 rx-box kubelet[1397268]: I0804 17:42:04.563170 1397268 server.go:213] "--pod-infra-container-image will not be pruned by the image garbage collector in kubelet and should also be set in the remote runtime"
+2026-08-04T17:42:04.570632+08:00 rx-box kubelet[1397268]: I0804 17:42:04.570575 1397268 server.go:529] "Kubelet version" kubeletVersion="v1.34.3"
+2026-08-04T17:42:04.570684+08:00 rx-box kubelet[1397268]: I0804 17:42:04.570602 1397268 server.go:531] "Golang settings" GOGC="" GOMAXPROCS="" GOTRACEBACK=""
+2026-08-04T17:42:04.570728+08:00 rx-box kubelet[1397268]: I0804 17:42:04.570650 1397268 watchdog_linux.go:95] "Systemd watchdog is not enabled"
+2026-08-04T17:42:04.570767+08:00 rx-box kubelet[1397268]: I0804 17:42:04.570662 1397268 watchdog_linux.go:137] "Systemd watchdog is not enabled or the interval is invalid, so health checking will not be started."
+2026-08-04T17:42:04.571061+08:00 rx-box kubelet[1397268]: I0804 17:42:04.571028 1397268 server.go:956] "Client rotation is on, will bootstrap in background"
+2026-08-04T17:42:04.572903+08:00 rx-box kubelet[1397268]: I0804 17:42:04.572867 1397268 certificate_store.go:147] "Loading cert/key pair from a file" filePath="/var/lib/kubelet/pki/kubelet-client-current.pem"
+2026-08-04T17:42:04.576361+08:00 rx-box kubelet[1397268]: I0804 17:42:04.576321 1397268 dynamic_cafile_content.go:161] "Starting controller" name="client-ca-bundle::/etc/kubernetes/pki/ca.crt"
+2026-08-04T17:42:04.580627+08:00 rx-box kubelet[1397268]: I0804 17:42:04.580545 1397268 server.go:1423] "Using cgroup driver setting received from the CRI runtime" cgroupDriver="cgroupfs"
+2026-08-04T17:42:04.598382+08:00 rx-box kubelet[1397268]: I0804 17:42:04.598287 1397268 server.go:781] "--cgroups-per-qos enabled, but --cgroup-root was not specified.  Defaulting to /"
+2026-08-04T17:42:04.598544+08:00 rx-box kubelet[1397268]: I0804 17:42:04.598490 1397268 swap_util.go:115] "Swap is on" /proc/swaps contents=<
+2026-08-04T17:42:04.598602+08:00 rx-box kubelet[1397268]: #011Filename#011#011#011#011Type#011#011Size#011#011Used#011#011Priority
+2026-08-04T17:42:04.598666+08:00 rx-box kubelet[1397268]: #011/swap.img                               file#011#0118388604#011#011461056#011#011-2
+2026-08-04T17:42:04.598722+08:00 rx-box kubelet[1397268]:  >
+2026-08-04T17:42:04.598785+08:00 rx-box kubelet[1397268]: E0804 17:42:04.598529 1397268 run.go:72] "command failed" err="failed to run Kubelet: running with swap on is not supported, please disable swap or set --fail-swap-on flag to false"
+2026-08-04T17:42:04.608738+08:00 rx-box systemd[1]: kubelet.service: Main process exited, code=exited, status=1/FAILURE
+2026-08-04T17:42:04.609297+08:00 rx-box systemd[1]: kubelet.service: Failed with result 'exit-code'.
+2026-08-04T17:42:04.616880+08:00 rx-box gitlab-runner[1223]: #033[0;33mWARNING: Checking for jobs... failed              #033[0;m  #033[0;33mcorrelation_id#033[0;m=e06190043b684da3af85b57734e9a25d #033[0;33mrunner#033[0;m=TUhZ497-o #033[0;33mrunner_name#033[0;m=rongxinai-ci-runner #033[0;33mstatus#033[0;m=execute JSON request: execute request: couldn't execute POST against http://172.18.5.179:8180/api/v4/jobs/request: Post "http://172.18.5.179:8180/api/v4/jobs/request": dial tcp 172.18.5.179:8180: connect: no route to host
+2026-08-04T17:42:05.429260+08:00 rx-box dauadm-server[1479]: {"time":"2026-08-04T17:42:05.428727548+08:00","level":"INFO","msg":"LCD info sent successfully"}
+2026-08-04T17:42:05.489642+08:00 rx-box dauadm-server[1479]: {"time":"2026-08-04T17:42:05.489565338+08:00","level":"INFO","msg":"Memory info sent successfully"}
+2026-08-04T17:42:05.489900+08:00 rx-box dauadm-server[1479]: 2026/08/04 17:42:05 Successfully connected to serial port /dev/ttyS1
+2026-08-04T17:42:05.489959+08:00 rx-box dauadm-server[1479]: 2026/08/04 17:42:05 The origin GPU INFO before filled is 2
+2026-08-04T17:42:05.490010+08:00 rx-box dauadm-server[1479]: 2026/08/04 17:42:05 The GPU number after filled is 4
+2026-08-04T17:42:08.208170+08:00 rx-box dauadm-server[1479]: {"time":"2026-08-04T17:42:08.207609589+08:00","level":"INFO","msg":"LCD info sent successfully"}
+2026-08-04T17:42:08.267705+08:00 rx-box dauadm-server[1479]: {"time":"2026-08-04T17:42:08.267603966+08:00","level":"INFO","msg":"Memory info sent successfully"}
+2026-08-04T17:42:08.267938+08:00 rx-box dauadm-server[1479]: 2026/08/04 17:42:08 Successfully connected to serial port /dev/ttyS1
+2026-08-04T17:42:08.267991+08:00 rx-box dauadm-server[1479]: 2026/08/04 17:42:08 The origin GPU INFO before filled is 2
+2026-08-04T17:42:08.268051+08:00 rx-box dauadm-server[1479]: 2026/08/04 17:42:08 The GPU number after filled is 4
+2026-08-04T17:42:09.029698+08:00 rx-box systemd[1]: Started session-164.scope - Session 164 of User root.

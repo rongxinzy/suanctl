@@ -257,10 +257,71 @@ fn combine_status(left: HealthStatus, right: HealthStatus) -> HealthStatus {
 #[cfg(test)]
 mod tests {
     use super::{parse_host_snapshot, HostText};
+    use crate::collectors::HostCollector;
 
     const CPUINFO: &str = include_str!("fixtures/host_cpuinfo.txt");
     const MEMINFO: &str = include_str!("fixtures/host_meminfo.txt");
     const OS_RELEASE: &str = include_str!("fixtures/host_os-release.txt");
+
+    #[test]
+    fn parses_real_rx_box_host() {
+        // 真实设备 rx-box（172.18.5.123）：Hygon C86 3350、16 逻辑 CPU、Ubuntu 24.04。
+        let root = std::env::temp_dir().join(format!("suanctl-host-real-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("proc/sys/kernel")).unwrap();
+        std::fs::create_dir_all(root.join("etc")).unwrap();
+        std::fs::create_dir_all(root.join("proc")).unwrap();
+        std::fs::write(
+            root.join("proc/sys/kernel/hostname"),
+            include_str!("fixtures/real-rx-box/rx_hostname.txt"),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("etc/os-release"),
+            include_str!("fixtures/real-rx-box/rx_os_release.txt"),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("proc/sys/kernel/osrelease"),
+            include_str!("fixtures/real-rx-box/rx_osrelease.txt"),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("proc/cpuinfo"),
+            include_str!("fixtures/real-rx-box/rx_cpuinfo.txt"),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("proc/loadavg"),
+            include_str!("fixtures/real-rx-box/rx_loadavg.txt"),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("proc/meminfo"),
+            include_str!("fixtures/real-rx-box/rx_meminfo.txt"),
+        )
+        .unwrap();
+
+        let snapshot = super::LinuxHostCollector::with_root(root.clone())
+            .collect_host()
+            .expect("real host chain");
+        assert_eq!(snapshot.hostname, "rx-box");
+        assert!(snapshot.os.contains("Ubuntu"), "os={}", snapshot.os);
+        assert_eq!(snapshot.kernel_version.as_deref(), Some("6.8.0-90-generic"));
+        assert_eq!(snapshot.logical_cpu_count, Some(16));
+        let cpu_model = snapshot.cpu_model.as_deref().unwrap_or("");
+        assert!(
+            cpu_model.contains("Hygon C86 3350"),
+            "cpu_model={cpu_model}"
+        );
+        assert_eq!(snapshot.load_1m, Some(0.94));
+        let memory_gib = snapshot.memory_total_mib.unwrap_or(0) / 1024;
+        assert!(
+            (62..=68).contains(&memory_gib),
+            "内存约 64GiB，实际 {memory_gib}GiB"
+        );
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn collectors_host_parses_normal_fixture() {
@@ -300,5 +361,38 @@ mod tests {
         assert_eq!(snapshot.logical_cpu_count, None);
         assert_eq!(snapshot.memory_total_mib, None);
         assert_eq!(snapshot.status.label(), "未知");
+    }
+
+    #[test]
+    fn collectors_host_full_chain_from_injected_root() {
+        // with_root 注入 fixture 根目录：验证 read_text + parse 完整链路，
+        // 不触碰真实 /proc 与 /etc。
+        let root = std::env::temp_dir().join(format!("suanctl-host-chain-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("proc/sys/kernel")).unwrap();
+        std::fs::create_dir_all(root.join("etc")).unwrap();
+        std::fs::create_dir_all(root.join("proc")).unwrap();
+        std::fs::write(root.join("proc/sys/kernel/hostname"), "chain-test\n").unwrap();
+        std::fs::write(root.join("etc/os-release"), OS_RELEASE).unwrap();
+        std::fs::write(root.join("proc/sys/kernel/osrelease"), "6.8.0-fixture\n").unwrap();
+        std::fs::write(root.join("proc/cpuinfo"), CPUINFO).unwrap();
+        std::fs::write(root.join("proc/loadavg"), "0.50 0.30 0.20 1/10 99\n").unwrap();
+        std::fs::write(root.join("proc/meminfo"), MEMINFO).unwrap();
+
+        let collector = super::LinuxHostCollector::with_root(root.clone());
+        let snapshot = collector.collect_host().expect("host chain");
+        assert_eq!(snapshot.hostname, "chain-test");
+        assert_eq!(snapshot.os, "Ubuntu 24.04.1 LTS");
+        assert_eq!(snapshot.kernel_version.as_deref(), Some("6.8.0-fixture"));
+        assert_eq!(snapshot.logical_cpu_count, Some(2));
+        assert_eq!(snapshot.load_1m, Some(0.5));
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn collectors_host_reports_unreadable_root_structurally() {
+        let collector = super::LinuxHostCollector::with_root("/nonexistent-suanctl-root");
+        let error = collector.collect_host().expect_err("missing root");
+        assert_eq!(error.code, "read_failed");
     }
 }

@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     collectors::runtime::RuntimeCollection,
-    domain::{DashboardSnapshot, DoctorReport, HealthStatus},
+    domain::{DashboardSnapshot, DoctorReport, HealthStatus, PciMmioKind},
 };
 
 pub const EVIDENCE_SCHEMA_VERSION: &str = "suanctl.evidence/v0.1";
@@ -211,6 +211,9 @@ fn render_jsonl(report: &EvidenceReport) -> Result<String, StorageError> {
     if let Some(platform) = &s.platform {
         lines.push(json_line("platform", platform)?);
     }
+    if let Some(logs) = &s.logs {
+        lines.push(json_line("logs", logs)?);
+    }
     lines.extend(
         s.findings
             .iter()
@@ -333,6 +336,11 @@ fn render_markdown(report: &EvidenceReport) -> String {
     } else {
         out.push_str("\n## 平台\n\n平台采集结果：未知。\n");
     }
+    if let Some(logs) = &s.logs {
+        render_logs(&mut out, logs);
+    } else {
+        out.push_str("\n## 系统日志\n\n日志采集结果：未知。\n");
+    }
     out.push_str("\n## 诊断\n\n");
     if s.findings.is_empty() {
         out.push_str("无诊断发现。\n");
@@ -346,6 +354,9 @@ fn render_markdown(report: &EvidenceReport) -> String {
                 esc(&finding.summary),
                 limited(&finding.evidence, 4)
             ));
+            if let Some(suggestion) = &finding.suggestion {
+                out.push_str(&format!("  - 建议：{}\n", esc(suggestion)));
+            }
         }
     }
     out.push_str("\n## 采集问题\n\n");
@@ -407,10 +418,16 @@ fn render_platform(out: &mut String, p: &crate::domain::PlatformSnapshot) {
         p.cuda.status,
     ));
     out.push_str(&row("PCIe 设备数量", p.pci_devices.len(), p.status));
-    out.push_str("\n### PCIe / Switch\n\n| BDF | 角色 | 厂商/设备 | 父级 | 下游 | 链路（当前 / 最大） | ACS | 状态 |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n");
+    if let Some(summary) = &p.acs_summary {
+        out.push_str(&format!(
+            "PCIe ACS 状态：支持 {} 台，开启隔离 {} 台，全部关闭 {} 台\n\n",
+            summary.supported, summary.enabled, summary.disabled
+        ));
+    }
+    out.push_str("\n### PCIe / Switch\n\n| BDF | 角色 | 厂商/设备 | 父级 | 下游 | 链路（当前 / 最大） | ACS | MMIO 窗口 | 状态 |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
     for d in p.pci_devices.iter().take(32) {
         out.push_str(&format!(
-            "| {} | {} | {}/{} | {} | {} | {} / {} | {} | {} |\n",
+            "| {} | {} | {}/{} | {} | {} | {} / {} | {} | {} | {} |\n",
             esc(&d.bdf),
             esc(unknown(d.role.map(|role| format!("{role:?}")))),
             esc(unknown(d.vendor_name.as_ref())),
@@ -433,6 +450,38 @@ fn render_platform(out: &mut String, p: &crate::domain::PlatformSnapshot) {
                 "已观测"
             } else {
                 "未知"
+            }),
+            esc(match d.mmio_windows.len() {
+                0 => "无".to_owned(),
+                count => {
+                    let mmio64 = d
+                        .mmio_windows
+                        .iter()
+                        .filter(|window| window.kind == PciMmioKind::Mmio64)
+                        .count();
+                    let mmio32 = d
+                        .mmio_windows
+                        .iter()
+                        .filter(|window| window.kind == PciMmioKind::Mmio32)
+                        .count();
+                    let summary = if mmio64 > 0 {
+                        format!("{mmio64}×64位")
+                    } else {
+                        String::new()
+                    };
+                    let summary = if mmio32 > 0 {
+                        let mut parts = vec![format!("{mmio32}×32位")];
+                        if !summary.is_empty() {
+                            parts.push(summary);
+                        }
+                        parts.join("+")
+                    } else if !summary.is_empty() {
+                        summary
+                    } else {
+                        format!("{count}个")
+                    };
+                    summary
+                }
             }),
             status(d.status)
         ));
@@ -517,6 +566,60 @@ fn render_platform(out: &mut String, p: &crate::domain::PlatformSnapshot) {
         }
     } else {
         out.push_str("\n### 存储\n\n存储控制器、mdraid、SAS：未知。\n");
+    }
+    if !p.plugins.is_empty() {
+        out.push_str("\n### 插件\n\n| 插件 | 路径 | 状态 |\n| --- | --- | --- |\n");
+        for plugin in &p.plugins {
+            out.push_str(&format!(
+                "| {} | {} | {} |\n",
+                esc(&plugin.name),
+                esc(unknown(plugin.path.as_ref())),
+                status(plugin.status)
+            ));
+        }
+    }
+}
+
+fn render_logs(out: &mut String, logs: &crate::domain::LogSnapshot) {
+    out.push_str("\n## 系统日志\n\n");
+    out.push_str(&format!("- 总体状态：{}\n", status(logs.status)));
+    out.push_str("- 日志来源：\n");
+    if logs.sources.is_empty() {
+        out.push_str("  - 无可用来源\n");
+    } else {
+        for source in &logs.sources {
+            out.push_str(&format!(
+                "  - `{}`：{}；命令：{}；路径：{}；尾部 {} 行；异常 {} 条{}\n",
+                esc(&source.name),
+                source.probe_status.label(),
+                unknown(source.command.as_ref()),
+                unknown(source.path.as_ref()),
+                source.lines_tail.len(),
+                source.match_count,
+                if source.truncated {
+                    "（尾部截断）"
+                } else {
+                    ""
+                }
+            ));
+        }
+    }
+    out.push_str("- 异常模式：\n");
+    if logs.matches.is_empty() {
+        out.push_str("  - 未检测到异常模式\n");
+    } else {
+        for matched in &logs.matches {
+            out.push_str(&format!(
+                "  - [{}] `{}`：命中 {} 次（{}）\n",
+                status(matched.severity),
+                esc(&matched.pattern),
+                matched.count,
+                esc(matched.sources.join("、"))
+            ));
+            for example in &matched.examples {
+                out.push_str(&format!("    - `{}`\n", esc(example)));
+            }
+        }
     }
 }
 

@@ -5,15 +5,19 @@ use crate::domain::{
     ServiceSnapshot,
 };
 
+pub mod agent;
 pub mod command;
 pub mod cuda;
 pub mod demo;
 pub mod gpu;
 pub mod host;
+pub mod logs;
 pub mod p2p;
 pub mod pcie;
 pub mod platform;
+pub mod plugin;
 pub mod raid;
+pub mod remote;
 pub mod runtime;
 pub mod sas;
 pub mod storage;

@@ -1,0 +1,40 @@
+[Tue Aug  4 17:38:01 2026] br-dea14eab2fdd: port 3(veth27d93f2) entered disabled state
+[Tue Aug  4 17:39:01 2026] br-dea14eab2fdd: port 3(veth8dc5a46) entered blocking state
+[Tue Aug  4 17:39:01 2026] br-dea14eab2fdd: port 3(veth8dc5a46) entered disabled state
+[Tue Aug  4 17:39:01 2026] veth8dc5a46: entered allmulticast mode
+[Tue Aug  4 17:39:01 2026] veth8dc5a46: entered promiscuous mode
+[Tue Aug  4 17:39:01 2026] eth0: renamed from veth50fbfc0
+[Tue Aug  4 17:39:01 2026] br-dea14eab2fdd: port 3(veth8dc5a46) entered blocking state
+[Tue Aug  4 17:39:01 2026] br-dea14eab2fdd: port 3(veth8dc5a46) entered forwarding state
+[Tue Aug  4 17:39:09 2026] br-dea14eab2fdd: port 3(veth8dc5a46) entered disabled state
+[Tue Aug  4 17:39:09 2026] veth50fbfc0: renamed from eth0
+[Tue Aug  4 17:39:09 2026] br-dea14eab2fdd: port 3(veth8dc5a46) entered disabled state
+[Tue Aug  4 17:39:09 2026] veth8dc5a46 (unregistering): left allmulticast mode
+[Tue Aug  4 17:39:09 2026] veth8dc5a46 (unregistering): left promiscuous mode
+[Tue Aug  4 17:39:09 2026] br-dea14eab2fdd: port 3(veth8dc5a46) entered disabled state
+[Tue Aug  4 17:40:09 2026] br-dea14eab2fdd: port 3(veth16ceb98) entered blocking state
+[Tue Aug  4 17:40:09 2026] br-dea14eab2fdd: port 3(veth16ceb98) entered disabled state
+[Tue Aug  4 17:40:09 2026] veth16ceb98: entered allmulticast mode
+[Tue Aug  4 17:40:09 2026] veth16ceb98: entered promiscuous mode
+[Tue Aug  4 17:40:09 2026] eth0: renamed from veth5394eac
+[Tue Aug  4 17:40:09 2026] br-dea14eab2fdd: port 3(veth16ceb98) entered blocking state
+[Tue Aug  4 17:40:09 2026] br-dea14eab2fdd: port 3(veth16ceb98) entered forwarding state
+[Tue Aug  4 17:40:16 2026] br-dea14eab2fdd: port 3(veth16ceb98) entered disabled state
+[Tue Aug  4 17:40:16 2026] veth5394eac: renamed from eth0
+[Tue Aug  4 17:40:16 2026] br-dea14eab2fdd: port 3(veth16ceb98) entered disabled state
+[Tue Aug  4 17:40:16 2026] veth16ceb98 (unregistering): left allmulticast mode
+[Tue Aug  4 17:40:16 2026] veth16ceb98 (unregistering): left promiscuous mode
+[Tue Aug  4 17:40:16 2026] br-dea14eab2fdd: port 3(veth16ceb98) entered disabled state
+[Tue Aug  4 17:41:16 2026] br-dea14eab2fdd: port 3(veth6c26d8f) entered blocking state
+[Tue Aug  4 17:41:16 2026] br-dea14eab2fdd: port 3(veth6c26d8f) entered disabled state
+[Tue Aug  4 17:41:16 2026] veth6c26d8f: entered allmulticast mode
+[Tue Aug  4 17:41:16 2026] veth6c26d8f: entered promiscuous mode
+[Tue Aug  4 17:41:16 2026] eth0: renamed from veth3a7bd2b
+[Tue Aug  4 17:41:16 2026] br-dea14eab2fdd: port 3(veth6c26d8f) entered blocking state
+[Tue Aug  4 17:41:16 2026] br-dea14eab2fdd: port 3(veth6c26d8f) entered forwarding state
+[Tue Aug  4 17:41:23 2026] br-dea14eab2fdd: port 3(veth6c26d8f) entered disabled state
+[Tue Aug  4 17:41:23 2026] veth3a7bd2b: renamed from eth0
+[Tue Aug  4 17:41:24 2026] br-dea14eab2fdd: port 3(veth6c26d8f) entered disabled state
+[Tue Aug  4 17:41:24 2026] veth6c26d8f (unregistering): left allmulticast mode
+[Tue Aug  4 17:41:24 2026] veth6c26d8f (unregistering): left promiscuous mode
+[Tue Aug  4 17:41:24 2026] br-dea14eab2fdd: port 3(veth6c26d8f) entered disabled state

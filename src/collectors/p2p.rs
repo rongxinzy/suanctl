@@ -22,6 +22,40 @@ pub const DEFAULT_P2P_TIMEOUT: Duration = Duration::from_secs(2);
 pub const DEFAULT_P2P_BENCHMARK_TIMEOUT: Duration = Duration::from_secs(120);
 pub const NVBANDWIDTH_TESTCASE: &str = "device_to_device_memcpy_write_ce";
 
+/// 调用内置 P2P 测速器（CUDA Samples p2pBandwidthLatencyTest）。
+/// 构建时 nvcc 将其编译为独立可执行并嵌入（`suanctl_p2p_test_bin`），运行时解包为
+/// 临时文件后以子进程执行——**主二进制零 CUDA 依赖**（测速器动态链系统 libcudart，
+/// GPU 机器自带；缺失时报错提示）。
+#[cfg(suanctl_builtin_p2p)]
+pub fn run_builtin_p2p_test() -> Result<(), String> {
+    let embedded: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/suanctl_p2p_test_bin"));
+    let path = std::env::temp_dir().join(format!(
+        "suanctl-p2p-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos())
+    ));
+    std::fs::write(&path, embedded).map_err(|error| format!("解包测速器失败：{error}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755));
+    }
+    let status = std::process::Command::new(&path)
+        .status()
+        .map_err(|error| {
+            let _ = std::fs::remove_file(&path);
+            format!("测速器启动失败（目标机器缺少 CUDA runtime libcudart？）：{error}")
+        })?;
+    let _ = std::fs::remove_file(&path);
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("退出码 {:?}", status.code()))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct P2pCollection {
     pub snapshot: P2pSnapshot,
@@ -175,7 +209,33 @@ impl<R: CommandRunner> NvidiaP2pCollector<R> {
         collection
     }
 
+    /// 显式运行 P2P 实测。优先使用内置 CUDA Samples 测速器（构建时编译进
+    /// 二进制、无外部依赖）；未编译（构建机无 nvcc）或执行失败时回退外部
+    /// `nvbandwidth`（若安装）。
     pub fn run_benchmark(&self) -> (P2pBenchmarkSnapshot, Vec<CollectionIssue>) {
+        #[cfg(suanctl_builtin_p2p)]
+        {
+            let measured_at = now_millis();
+            match run_builtin_p2p_test() {
+                Ok(()) => {
+                    let snapshot = P2pBenchmarkSnapshot {
+                        status: P2pBenchmarkStatus::Succeeded,
+                        tool: "内置 p2pBandwidthLatencyTest (CUDA Samples 13.2)".to_owned(),
+                        testcase: "p2p_bandwidth_latency_matrix".to_owned(),
+                        measured_at: Some(measured_at),
+                        direction_description: Some(
+                            "单向带宽矩阵 + 延迟矩阵（P2P 开/关，写入方向）".to_owned(),
+                        ),
+                        measurements: Vec::new(),
+                        message: Some("内置 CUDA Samples P2P 测速完成，矩阵见终端输出".to_owned()),
+                    };
+                    return (snapshot, Vec::new());
+                }
+                Err(message) => {
+                    eprintln!("内置 P2P 测速不可用（{message}），回退 nvbandwidth");
+                }
+            }
+        }
         let mut request = CommandRequest::new(
             "nvbandwidth",
             ["-t", NVBANDWIDTH_TESTCASE, "--format", "json"],

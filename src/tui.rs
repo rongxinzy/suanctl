@@ -54,16 +54,21 @@ where
     result
 }
 
-pub fn run_with_actions<R, P, E>(
+pub fn run_with_actions<R, P, E, S>(
     state: &mut AppState,
     refresh: R,
     benchmark: P,
     export: E,
+    remote_scan: S,
 ) -> io::Result<()>
 where
-    R: FnMut() -> RuntimeCollection,
+    R: Fn() -> RuntimeCollection + Send + Sync + 'static,
     P: Fn() -> (RuntimeCollection, Result<String, String>) + Send + Sync + 'static,
     E: Fn(RuntimeCollection, UiReportFormat) -> Result<String, String> + Send + Sync + 'static,
+    S: Fn(&str) -> (crate::domain::RemoteScanSnapshot, Result<String, String>)
+        + Send
+        + Sync
+        + 'static,
 {
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
@@ -78,7 +83,14 @@ where
         return Err(error);
     }
 
-    let result = app::run_with_actions(&mut terminal, state, refresh, benchmark, export);
+    let result = app::run_with_actions(
+        &mut terminal,
+        state,
+        refresh,
+        benchmark,
+        export,
+        remote_scan,
+    );
     session.restore(&mut terminal)?;
     result
 }

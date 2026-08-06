@@ -7,7 +7,8 @@ use std::time::Duration;
 use crate::domain::{GpuSnapshot, HealthStatus};
 
 use super::command::{
-    CommandRequest, CommandRunner, ProcessCommandRunner, DEFAULT_STDERR_LIMIT, DEFAULT_STDOUT_LIMIT,
+    CommandOutput, CommandRequest, CommandRunner, ProcessCommandRunner, DEFAULT_STDERR_LIMIT,
+    DEFAULT_STDOUT_LIMIT,
 };
 use super::{CollectorError, GpuCollector};
 
@@ -74,8 +75,31 @@ impl<R: CommandRunner> NvidiaSmiCollector<R> {
     }
 
     fn collect_gpus_unchecked(&self) -> Result<Vec<GpuSnapshot>, CollectorError> {
+        // nvidia-smi 不可用时尝试 querygpu（改名体）。
+        let (output, tool) = match self.run_smi("nvidia-smi") {
+            Ok(output) => (output, "nvidia-smi".to_owned()),
+            Err(primary_error) => match self.run_smi("querygpu") {
+                Ok(output) => (output, "querygpu".to_owned()),
+                Err(_) => {
+                    return Err(CollectorError::new(
+                        "gpu",
+                        "command_failed",
+                        format!("nvidia-smi 与 querygpu 均不可用：{}", primary_error.message),
+                    ));
+                }
+            },
+        };
+        let mut gpus = parse_query_output(&output.stdout, &self.sysfs_root)?;
+        for gpu in &mut gpus {
+            gpu.smi_tool = Some(tool.clone());
+        }
+        Ok(gpus)
+    }
+
+    /// 运行一个 SMI 工具（nvidia-smi 或其改名体 querygpu）并统一错误处理。
+    fn run_smi(&self, tool: &str) -> Result<CommandOutput, CollectorError> {
         let mut request = CommandRequest::new(
-            "nvidia-smi",
+            tool,
             [
                 format!("--query-gpu={NVIDIA_SMI_QUERY_FIELDS}"),
                 "--format=csv,noheader,nounits".to_owned(),
@@ -90,25 +114,25 @@ impl<R: CommandRunner> NvidiaSmiCollector<R> {
             return Err(CollectorError::new(
                 "gpu",
                 "command_timeout",
-                "nvidia-smi 超时，子进程已终止并回收",
+                format!("{tool} 超时，子进程已终止并回收"),
             ));
         }
         if output.stdout_truncated || output.stderr_truncated {
             return Err(CollectorError::new(
                 "gpu",
                 "output_too_large",
-                "nvidia-smi 输出超过安全上限",
+                format!("{tool} 输出超过安全上限"),
             ));
         }
         if !output.success {
             let detail = if output.stderr.trim().is_empty() {
-                format!("nvidia-smi 退出码 {:?}", output.exit_code)
+                format!("{tool} 退出码 {:?}", output.exit_code)
             } else {
-                format!("nvidia-smi 失败：{}", output.stderr.trim())
+                format!("{tool} 失败：{}", output.stderr.trim())
             };
             return Err(CollectorError::new("gpu", "command_failed", detail));
         }
-        parse_query_output(&output.stdout, &self.sysfs_root)
+        Ok(output)
     }
 }
 
@@ -216,6 +240,7 @@ fn parse_gpu(
         },
         // Xid 属于 journal/kernel 证据，按任务边界本采集器不读取。
         xid_codes: None,
+        smi_tool: None,
     })
 }
 
@@ -325,6 +350,7 @@ mod tests {
     use super::super::command::{CommandOutput, CommandRequest, CommandRunner};
     use super::{parse_query_output, NvidiaSmiCollector};
     use crate::collectors::CollectorError;
+    use crate::collectors::GpuCollector;
 
     const NORMAL: &str = include_str!("fixtures/nvidia_smi_normal.csv");
     const EDGE: &str = include_str!("fixtures/nvidia_smi_edge.csv");
@@ -332,10 +358,15 @@ mod tests {
     #[derive(Clone)]
     struct FakeRunner {
         result: Arc<Result<CommandOutput, CollectorError>>,
+        /// 按程序名分流的响应（fallback 测试用）。
+        by_program: std::collections::BTreeMap<String, Arc<Result<CommandOutput, CollectorError>>>,
     }
 
     impl CommandRunner for FakeRunner {
-        fn run(&self, _request: &CommandRequest) -> Result<CommandOutput, CollectorError> {
+        fn run(&self, request: &CommandRequest) -> Result<CommandOutput, CollectorError> {
+            if let Some(response) = self.by_program.get(&request.program) {
+                return response.as_ref().clone();
+            }
             self.result.as_ref().clone()
         }
     }
@@ -376,11 +407,14 @@ mod tests {
         ));
         let collector = NvidiaSmiCollector::with_runner(FakeRunner {
             result: Arc::new(result),
+            by_program: std::collections::BTreeMap::new(),
         });
         let error = collector
             .collect_gpus_unchecked()
             .expect_err("missing GPU command");
-        assert_eq!(error.code, "spawn_failed");
+        // nvidia-smi 与 querygpu 均不可用 → 汇总错误。
+        assert_eq!(error.code, "command_failed");
+        assert!(error.message.contains("nvidia-smi") && error.message.contains("querygpu"));
     }
 
     #[test]
@@ -395,9 +429,177 @@ mod tests {
                 stdout_truncated: false,
                 stderr_truncated: false,
             })),
+            by_program: std::collections::BTreeMap::new(),
         });
         let error = collector.collect_gpus_unchecked().expect_err("timeout");
         assert_eq!(error.collector, "gpu");
-        assert_eq!(error.code, "command_timeout");
+        // nvidia-smi 与 querygpu 均超时 → 汇总错误（保留超时提示）。
+        assert_eq!(error.code, "command_failed");
+        assert!(error.message.contains("nvidia-smi") && error.message.contains("querygpu"));
+    }
+
+    #[test]
+    fn parses_real_rx_box_l20_output() {
+        // 真实设备 rx-box（172.18.5.123）的 nvidia-smi 输出：2× NVIDIA L20。
+        const REAL: &str = include_str!("fixtures/real-rx-box/rx_nvidia_smi_l20.csv");
+        let collector = NvidiaSmiCollector::with_runner(FakeRunner {
+            result: Arc::new(Ok(CommandOutput {
+                success: true,
+                exit_code: Some(0),
+                stdout: REAL.to_owned(),
+                stderr: String::new(),
+                timed_out: false,
+                stdout_truncated: false,
+                stderr_truncated: false,
+            })),
+            by_program: std::collections::BTreeMap::new(),
+        });
+        let gpus = collector.collect_gpus().expect("real gpu parse");
+        assert_eq!(gpus.len(), 2);
+        for (index, gpu) in gpus.iter().enumerate() {
+            assert_eq!(gpu.name, "NVIDIA L20");
+            assert_eq!(
+                gpu.uuid.as_ref().map(String::len),
+                Some(40),
+                "真实 UUID（含 GPU- 前缀）"
+            );
+            assert_eq!(
+                gpu.pci_address.as_deref(),
+                Some(if index == 0 {
+                    "00000000:0C:00.0"
+                } else {
+                    "00000000:0F:00.0"
+                })
+            );
+            assert_eq!(gpu.memory_total_mib, Some(46068));
+            assert!(gpu.temperature_celsius.unwrap_or(0) >= 40, "L20 工作温度");
+            assert_eq!(gpu.power_limit_watts, Some(350.0));
+            assert_eq!(gpu.status, crate::domain::HealthStatus::Healthy);
+        }
+        // 第一张卡：56°C / 87.95W / P0
+        assert_eq!(gpus[0].temperature_celsius, Some(56));
+        assert_eq!(gpus[0].utilization_percent, Some(0));
+        assert_eq!(gpus[0].pstate.as_deref(), Some("P0"));
+    }
+
+    #[test]
+    fn collectors_gpu_full_chain_via_trait_entry() {
+        // GpuCollector trait 入口（collect_gpus）完整链路：runner → 解析 → 快照。
+        let collector = NvidiaSmiCollector::with_runner(FakeRunner {
+            result: Arc::new(Ok(CommandOutput {
+                success: true,
+                exit_code: Some(0),
+                stdout: NORMAL.to_owned(),
+                stderr: String::new(),
+                timed_out: false,
+                stdout_truncated: false,
+                stderr_truncated: false,
+            })),
+            by_program: std::collections::BTreeMap::new(),
+        });
+        let gpus = collector.collect_gpus().expect("gpu trait chain");
+        assert_eq!(gpus.len(), 2);
+        assert_eq!(gpus[0].name, "NVIDIA GeForce RTX 4060 Ti, Test");
+        assert_eq!(gpus[0].status, crate::domain::HealthStatus::Healthy);
+    }
+
+    #[test]
+    fn collectors_gpu_nonzero_exit_maps_to_command_failed() {
+        let collector = NvidiaSmiCollector::with_runner(FakeRunner {
+            result: Arc::new(Ok(CommandOutput {
+                success: false,
+                exit_code: Some(9),
+                stdout: String::new(),
+                stderr: "NVML_ERROR_DRIVER_NOT_LOADED\n".to_owned(),
+                timed_out: false,
+                stdout_truncated: false,
+                stderr_truncated: false,
+            })),
+            by_program: std::collections::BTreeMap::new(),
+        });
+        let error = collector.collect_gpus_unchecked().expect_err("failed");
+        assert_eq!(error.code, "command_failed");
+        assert!(error.message.contains("NVML_ERROR_DRIVER_NOT_LOADED"));
+    }
+
+    #[test]
+    fn falls_back_to_querygpu_when_nvidia_smi_is_unavailable() {
+        // nvidia-smi 不存在（spawn 失败）→ 尝试 querygpu（改名体）并标记工具。
+        let unavailable = Arc::new(Err(CollectorError::new(
+            "command",
+            "spawn_failed",
+            "无法启动 nvidia-smi：No such file or directory",
+        )));
+        let available = Arc::new(Ok(CommandOutput {
+            success: true,
+            exit_code: Some(0),
+            stdout: NORMAL.to_owned(),
+            stderr: String::new(),
+            timed_out: false,
+            stdout_truncated: false,
+            stderr_truncated: false,
+        }));
+        let collector = NvidiaSmiCollector::with_runner(FakeRunner {
+            result: unavailable.clone(),
+            by_program: std::collections::BTreeMap::from([
+                ("nvidia-smi".to_owned(), unavailable),
+                ("querygpu".to_owned(), available),
+            ]),
+        });
+        let gpus = collector
+            .collect_gpus_unchecked()
+            .expect("querygpu fallback");
+        assert_eq!(gpus.len(), 2);
+        assert_eq!(gpus[0].name, "NVIDIA GeForce RTX 4060 Ti, Test");
+        assert_eq!(
+            gpus[0].smi_tool.as_deref(),
+            Some("querygpu"),
+            "应记录实际使用的工具"
+        );
+        assert_eq!(gpus[1].smi_tool.as_deref(), Some("querygpu"));
+    }
+
+    #[test]
+    fn marks_nvidia_smi_as_tool_when_primary_succeeds() {
+        let collector = NvidiaSmiCollector::with_runner(FakeRunner {
+            result: Arc::new(Ok(CommandOutput {
+                success: true,
+                exit_code: Some(0),
+                stdout: NORMAL.to_owned(),
+                stderr: String::new(),
+                timed_out: false,
+                stdout_truncated: false,
+                stderr_truncated: false,
+            })),
+            by_program: std::collections::BTreeMap::new(),
+        });
+        let gpus = collector.collect_gpus_unchecked().expect("nvidia-smi");
+        assert_eq!(gpus[0].smi_tool.as_deref(), Some("nvidia-smi"));
+    }
+
+    #[test]
+    fn reports_both_tools_unavailable_in_error() {
+        // nvidia-smi 与 querygpu 均不可用 → 错误信息应同时提及两者。
+        let unavailable = Arc::new(Err(CollectorError::new(
+            "command",
+            "spawn_failed",
+            "无法启动 nvidia-smi：No such file or directory",
+        )));
+        let collector = NvidiaSmiCollector::with_runner(FakeRunner {
+            result: unavailable.clone(),
+            by_program: std::collections::BTreeMap::from([
+                ("nvidia-smi".to_owned(), unavailable.clone()),
+                ("querygpu".to_owned(), unavailable),
+            ]),
+        });
+        let error = collector
+            .collect_gpus_unchecked()
+            .expect_err("both missing");
+        assert_eq!(error.code, "command_failed");
+        assert!(
+            error.message.contains("nvidia-smi") && error.message.contains("querygpu"),
+            "错误应提及两个工具：{}",
+            error.message
+        );
     }
 }

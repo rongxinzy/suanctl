@@ -1,0 +1,118 @@
+00:00.0 Host bridge [0600]: Chengdu Haiguang IC Design Co., Ltd. Root Complex [1d94:1450]
+	Subsystem: Chengdu Haiguang IC Design Co., Ltd. Root Complex [1d94:1450]
+00:00.2 IOMMU [0806]: Chengdu Haiguang IC Design Co., Ltd. I/O Memory Management Unit [1d94:1451]
+	Subsystem: Chengdu Haiguang IC Design Co., Ltd. I/O Memory Management Unit [1d94:1451]
+00:01.0 Host bridge [0600]: Chengdu Haiguang IC Design Co., Ltd. PCIe Dummy Host Bridge [1d94:1452]
+00:01.5 PCI bridge [0604]: Chengdu Haiguang IC Design Co., Ltd. PCIE GPP Bridge [1d94:1453]
+	Subsystem: Chengdu Haiguang IC Design Co., Ltd. PCIE GPP Bridge [1d94:1453]
+	Kernel driver in use: pcieport
+00:01.6 PCI bridge [0604]: Chengdu Haiguang IC Design Co., Ltd. PCIE GPP Bridge [1d94:1453]
+	Subsystem: Chengdu Haiguang IC Design Co., Ltd. PCIE GPP Bridge [1d94:1453]
+	Kernel driver in use: pcieport
+00:01.7 PCI bridge [0604]: Chengdu Haiguang IC Design Co., Ltd. PCIE GPP Bridge [1d94:1453]
+	Subsystem: Chengdu Haiguang IC Design Co., Ltd. PCIE GPP Bridge [1d94:1453]
+	Kernel driver in use: pcieport
+00:02.0 Host bridge [0600]: Chengdu Haiguang IC Design Co., Ltd. PCIe Dummy Host Bridge [1d94:1452]
+00:02.1 PCI bridge [0604]: Chengdu Haiguang IC Design Co., Ltd. PCIE GPP Bridge [1d94:1453]
+	Subsystem: Chengdu Haiguang IC Design Co., Ltd. PCIE GPP Bridge [1d94:1453]
+	Kernel driver in use: pcieport
+00:03.0 Host bridge [0600]: Chengdu Haiguang IC Design Co., Ltd. PCIe Dummy Host Bridge [1d94:1452]
+00:03.1 PCI bridge [0604]: Chengdu Haiguang IC Design Co., Ltd. PCIE GPP Bridge [1d94:1453]
+	Subsystem: Chengdu Haiguang IC Design Co., Ltd. PCIE GPP Bridge [1d94:1453]
+	Kernel driver in use: pcieport
+00:04.0 Host bridge [0600]: Chengdu Haiguang IC Design Co., Ltd. PCIe Dummy Host Bridge [1d94:1452]
+00:07.0 Host bridge [0600]: Chengdu Haiguang IC Design Co., Ltd. PCIe Dummy Host Bridge [1d94:1452]
+00:07.1 PCI bridge [0604]: Chengdu Haiguang IC Design Co., Ltd. Internal PCIe GPP Bridge 0 to Bus B [1d94:1454]
+	Subsystem: Chengdu Haiguang IC Design Co., Ltd. Internal PCIe GPP Bridge 0 to Bus B [1d94:1454]
+	Kernel driver in use: pcieport
+00:08.0 Host bridge [0600]: Chengdu Haiguang IC Design Co., Ltd. PCIe Dummy Host Bridge [1d94:1452]
+00:08.1 PCI bridge [0604]: Chengdu Haiguang IC Design Co., Ltd. Internal PCIe GPP Bridge 0 to Bus B [1d94:1454]
+	Subsystem: Chengdu Haiguang IC Design Co., Ltd. Internal PCIe GPP Bridge 0 to Bus B [1d94:1454]
+	Kernel driver in use: pcieport
+00:14.0 SMBus [0c05]: Chengdu Haiguang IC Design Co., Ltd. FCH SMBus Controller [1d94:790b] (rev 59)
+	Subsystem: Chengdu Haiguang IC Design Co., Ltd. FCH SMBus Controller [1d94:790b]
+	Kernel driver in use: piix4_smbus
+	Kernel modules: i2c_piix4, sp5100_tco
+00:14.3 ISA bridge [0601]: Chengdu Haiguang IC Design Co., Ltd. FCH LPC Bridge [1d94:790e] (rev 51)
+	Subsystem: Chengdu Haiguang IC Design Co., Ltd. FCH LPC Bridge [1d94:790e]
+00:18.0 Host bridge [0600]: Chengdu Haiguang IC Design Co., Ltd. Data Fabric: Device 18h; Function 0 [1d94:1460]
+00:18.1 Host bridge [0600]: Chengdu Haiguang IC Design Co., Ltd. Data Fabric: Device 18h; Function 1 [1d94:1461]
+00:18.2 Host bridge [0600]: Chengdu Haiguang IC Design Co., Ltd. Data Fabric: Device 18h; Function 2 [1d94:1462]
+00:18.3 Host bridge [0600]: Chengdu Haiguang IC Design Co., Ltd. Data Fabric: Device 18h; Function 3 [1d94:1463]
+	Kernel driver in use: k10temp
+	Kernel modules: k10temp
+00:18.4 Host bridge [0600]: Chengdu Haiguang IC Design Co., Ltd. Data Fabric: Device 18h; Function 4 [1d94:1464]
+00:18.5 Host bridge [0600]: Chengdu Haiguang IC Design Co., Ltd. Data Fabric: Device 18h; Function 5 [1d94:1465]
+00:18.6 Host bridge [0600]: Chengdu Haiguang IC Design Co., Ltd. Data Fabric: Device 18h; Function 6 [1d94:1466]
+00:18.7 Host bridge [0600]: Chengdu Haiguang IC Design Co., Ltd. Data Fabric: Device 18h; Function 7 [1d94:1467]
+01:00.0 SATA controller [0106]: ASMedia Technology Inc. ASM1164 Serial ATA AHCI Controller [1b21:1164] (rev 02)
+	Subsystem: ASMedia Technology Inc. Device [1b21:2116]
+	Kernel driver in use: ahci
+	Kernel modules: ahci
+02:00.0 Ethernet controller [0200]: Intel Corporation Ethernet Controller X710 for 10GbE SFP+ [8086:1572] (rev 02)
+	Subsystem: Intel Corporation Ethernet Converged Network Adapter X710-2 [8086:0007]
+	Kernel driver in use: i40e
+	Kernel modules: i40e
+02:00.1 Ethernet controller [0200]: Intel Corporation Ethernet Controller X710 for 10GbE SFP+ [8086:1572] (rev 02)
+	Subsystem: Intel Corporation Ethernet Converged Network Adapter X710 [8086:0000]
+	Kernel driver in use: i40e
+	Kernel modules: i40e
+03:00.0 PCI bridge [0604]: ASMedia Technology Inc. ASM1182e 2-Port PCIe x1 Gen2 Packet Switch [1b21:1182]
+	Subsystem: ASMedia Technology Inc. ASM1182e 2-Port PCIe x1 Gen2 Packet Switch [1b21:118f]
+	Kernel driver in use: pcieport
+04:03.0 PCI bridge [0604]: ASMedia Technology Inc. ASM1182e 2-Port PCIe x1 Gen2 Packet Switch [1b21:1182]
+	Subsystem: ASMedia Technology Inc. ASM1182e 2-Port PCIe x1 Gen2 Packet Switch [1b21:118f]
+	Kernel driver in use: pcieport
+04:07.0 PCI bridge [0604]: ASMedia Technology Inc. ASM1182e 2-Port PCIe x1 Gen2 Packet Switch [1b21:1182]
+	Subsystem: ASMedia Technology Inc. ASM1182e 2-Port PCIe x1 Gen2 Packet Switch [1b21:118f]
+	Kernel driver in use: pcieport
+05:00.0 VGA compatible controller [0300]: Silicon Motion, Inc. SM768 [126f:0768] (rev 03)
+	Subsystem: Silicon Motion, Inc. SM768 [126f:0768]
+06:00.0 Ethernet controller [0200]: Motorcomm Microelectronics. YT6801 Gigabit Ethernet Controller [1f0a:6801] (rev 01)
+	Subsystem: Device [2066:9806]
+	Kernel driver in use: yt6801
+	Kernel modules: yt6801
+07:00.0 Non-Volatile memory controller [0108]: MAXIO Technology (Hangzhou) Ltd. NVMe SSD Controller MAP1202 (DRAM-less) [1e4b:1202] (rev 01)
+	Subsystem: MAXIO Technology (Hangzhou) Ltd. NVMe SSD Controller MAP1202 [1e4b:1202]
+	Kernel driver in use: nvme
+	Kernel modules: nvme
+08:00.0 PCI bridge [0604]: Broadcom / LSI PEX890xx PCIe Gen 5 Switch [1000:c034] (rev a0)
+	Subsystem: Broadcom / LSI PEX89048 PCIe Gen 5 48 port/lane Switch Upstream/Downstream Port [1000:0048]
+	Kernel driver in use: pcieport
+09:00.0 PCI bridge [0604]: Broadcom / LSI PEX890xx PCIe Gen 5 Switch [1000:c034] (rev a0)
+	Subsystem: Broadcom / LSI PEX890xx PCIe Gen 5 Switch [1000:1003]
+	Kernel driver in use: pcieport
+09:04.0 PCI bridge [0604]: Broadcom / LSI PEX890xx PCIe Gen 5 Switch [1000:c034] (rev a0)
+	Subsystem: Broadcom / LSI PEX890xx PCIe Gen 5 Switch [1000:1003]
+0a:00.0 PCI bridge [0604]: Broadcom / LSI PEX890xx PCIe Gen 5 Switch [1000:c034] (rev a0)
+	Subsystem: Broadcom / LSI PEX890xx PCIe Gen 5 Switch [1000:1003]
+	Kernel driver in use: pcieport
+0b:10.0 PCI bridge [0604]: Broadcom / LSI PEX890xx PCIe Gen 5 Switch [1000:c034] (rev a0)
+	Subsystem: Broadcom / LSI PEX89048 PCIe Gen 5 48 port/lane Switch Upstream/Downstream Port [1000:0048]
+	Kernel driver in use: pcieport
+0c:00.0 3D controller [0302]: XINCHAO Corporation XCHAO-8180 [10de:26ba] (rev a1)
+	Subsystem: XINCHAO Corporation Device [10de:1957]
+	Kernel driver in use: nvidia
+	Kernel modules: nvidiafb, nouveau, nvidia_drm, nvidia
+0d:00.0 PCI bridge [0604]: Broadcom / LSI PEX890xx PCIe Gen 5 Switch [1000:c034] (rev a0)
+	Subsystem: Broadcom / LSI PEX890xx PCIe Gen 5 Switch [1000:1003]
+	Kernel driver in use: pcieport
+0e:00.0 PCI bridge [0604]: Broadcom / LSI PEX890xx PCIe Gen 5 Switch [1000:c034] (rev a0)
+	Subsystem: Broadcom / LSI PEX89048 PCIe Gen 5 48 port/lane Switch Upstream/Downstream Port [1000:0048]
+	Kernel driver in use: pcieport
+0f:00.0 3D controller [0302]: XINCHAO Corporation XCHAO-8180 [10de:26ba] (rev a1)
+	Subsystem: XINCHAO Corporation Device [10de:1957]
+	Kernel driver in use: nvidia
+	Kernel modules: nvidiafb, nouveau, nvidia_drm, nvidia
+10:00.0 Non-Essential Instrumentation [1300]: Chengdu Haiguang IC Design Co., Ltd. PCIe Dummy Function [1d94:145a]
+	Subsystem: Chengdu Haiguang IC Design Co., Ltd. PCIe Dummy Function [1d94:145a]
+10:00.2 Encryption controller [1080]: Chengdu Haiguang IC Design Co., Ltd. PSPCCP Command DMA Processor [1d94:1456]
+	Subsystem: Chengdu Haiguang IC Design Co., Ltd. PSPCCP Command DMA Processor [1d94:1456]
+10:00.3 USB controller [0c03]: Chengdu Haiguang IC Design Co., Ltd. USB 3.0 Host controller [1d94:145f]
+	Subsystem: Chengdu Haiguang IC Design Co., Ltd. USB 3.0 Host controller [1d94:145c]
+	Kernel driver in use: xhci_hcd
+	Kernel modules: xhci_pci
+11:00.0 Non-Essential Instrumentation [1300]: Chengdu Haiguang IC Design Co., Ltd. PCIe Dummy Function [1d94:1455]
+	Subsystem: Chengdu Haiguang IC Design Co., Ltd. PCIe Dummy Function [1d94:1455]
+11:00.1 Encryption controller [1080]: Chengdu Haiguang IC Design Co., Ltd. NTBCCP [1d94:1468]
+	Subsystem: Chengdu Haiguang IC Design Co., Ltd. NTBCCP [1d94:1468]

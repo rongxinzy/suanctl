@@ -395,7 +395,7 @@ fn summarize_status(
     }
 
     match health.http_status {
-        Some(status @ 200..=299) if health.status == ProbeStatus::Succeeded => {
+        Some(200..=299) if health.status == ProbeStatus::Succeeded => {
             if models.status == ProbeStatus::Succeeded && metrics.status == ProbeStatus::Succeeded {
                 HealthStatus::Healthy
             } else {

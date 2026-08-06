@@ -1,0 +1,40 @@
+2026-08-04T17:38:04.475157+08:00 rx-box kernel: br-dea14eab2fdd: port 3(veth27d93f2) entered disabled state
+2026-08-04T17:39:04.334162+08:00 rx-box kernel: br-dea14eab2fdd: port 3(veth8dc5a46) entered blocking state
+2026-08-04T17:39:04.334183+08:00 rx-box kernel: br-dea14eab2fdd: port 3(veth8dc5a46) entered disabled state
+2026-08-04T17:39:04.334185+08:00 rx-box kernel: veth8dc5a46: entered allmulticast mode
+2026-08-04T17:39:04.334187+08:00 rx-box kernel: veth8dc5a46: entered promiscuous mode
+2026-08-04T17:39:04.366159+08:00 rx-box kernel: eth0: renamed from veth50fbfc0
+2026-08-04T17:39:04.377156+08:00 rx-box kernel: br-dea14eab2fdd: port 3(veth8dc5a46) entered blocking state
+2026-08-04T17:39:04.377162+08:00 rx-box kernel: br-dea14eab2fdd: port 3(veth8dc5a46) entered forwarding state
+2026-08-04T17:39:11.758158+08:00 rx-box kernel: br-dea14eab2fdd: port 3(veth8dc5a46) entered disabled state
+2026-08-04T17:39:11.758176+08:00 rx-box kernel: veth50fbfc0: renamed from eth0
+2026-08-04T17:39:11.804158+08:00 rx-box kernel: br-dea14eab2fdd: port 3(veth8dc5a46) entered disabled state
+2026-08-04T17:39:11.806143+08:00 rx-box kernel: veth8dc5a46 (unregistering): left allmulticast mode
+2026-08-04T17:39:11.806152+08:00 rx-box kernel: veth8dc5a46 (unregistering): left promiscuous mode
+2026-08-04T17:39:11.806154+08:00 rx-box kernel: br-dea14eab2fdd: port 3(veth8dc5a46) entered disabled state
+2026-08-04T17:40:11.796159+08:00 rx-box kernel: br-dea14eab2fdd: port 3(veth16ceb98) entered blocking state
+2026-08-04T17:40:11.796180+08:00 rx-box kernel: br-dea14eab2fdd: port 3(veth16ceb98) entered disabled state
+2026-08-04T17:40:11.796183+08:00 rx-box kernel: veth16ceb98: entered allmulticast mode
+2026-08-04T17:40:11.796184+08:00 rx-box kernel: veth16ceb98: entered promiscuous mode
+2026-08-04T17:40:11.829147+08:00 rx-box kernel: eth0: renamed from veth5394eac
+2026-08-04T17:40:11.846139+08:00 rx-box kernel: br-dea14eab2fdd: port 3(veth16ceb98) entered blocking state
+2026-08-04T17:40:11.846151+08:00 rx-box kernel: br-dea14eab2fdd: port 3(veth16ceb98) entered forwarding state
+2026-08-04T17:40:19.236145+08:00 rx-box kernel: br-dea14eab2fdd: port 3(veth16ceb98) entered disabled state
+2026-08-04T17:40:19.236162+08:00 rx-box kernel: veth5394eac: renamed from eth0
+2026-08-04T17:40:19.287149+08:00 rx-box kernel: br-dea14eab2fdd: port 3(veth16ceb98) entered disabled state
+2026-08-04T17:40:19.288158+08:00 rx-box kernel: veth16ceb98 (unregistering): left allmulticast mode
+2026-08-04T17:40:19.288172+08:00 rx-box kernel: veth16ceb98 (unregistering): left promiscuous mode
+2026-08-04T17:40:19.288174+08:00 rx-box kernel: br-dea14eab2fdd: port 3(veth16ceb98) entered disabled state
+2026-08-04T17:41:19.295165+08:00 rx-box kernel: br-dea14eab2fdd: port 3(veth6c26d8f) entered blocking state
+2026-08-04T17:41:19.295191+08:00 rx-box kernel: br-dea14eab2fdd: port 3(veth6c26d8f) entered disabled state
+2026-08-04T17:41:19.295194+08:00 rx-box kernel: veth6c26d8f: entered allmulticast mode
+2026-08-04T17:41:19.295196+08:00 rx-box kernel: veth6c26d8f: entered promiscuous mode
+2026-08-04T17:41:19.329145+08:00 rx-box kernel: eth0: renamed from veth3a7bd2b
+2026-08-04T17:41:19.339151+08:00 rx-box kernel: br-dea14eab2fdd: port 3(veth6c26d8f) entered blocking state
+2026-08-04T17:41:19.339161+08:00 rx-box kernel: br-dea14eab2fdd: port 3(veth6c26d8f) entered forwarding state
+2026-08-04T17:41:26.707153+08:00 rx-box kernel: br-dea14eab2fdd: port 3(veth6c26d8f) entered disabled state
+2026-08-04T17:41:26.707172+08:00 rx-box kernel: veth3a7bd2b: renamed from eth0
+2026-08-04T17:41:26.754150+08:00 rx-box kernel: br-dea14eab2fdd: port 3(veth6c26d8f) entered disabled state
+2026-08-04T17:41:26.755139+08:00 rx-box kernel: veth6c26d8f (unregistering): left allmulticast mode
+2026-08-04T17:41:26.755148+08:00 rx-box kernel: veth6c26d8f (unregistering): left promiscuous mode
+2026-08-04T17:41:26.755150+08:00 rx-box kernel: br-dea14eab2fdd: port 3(veth6c26d8f) entered disabled state

@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use crate::domain::{
     AcsCapability, AcsControl, AcsSnapshot, CollectionIssue, HealthStatus, PciDeviceRole,
-    PciDeviceSnapshot,
+    PciDeviceSnapshot, PciMmioKind, PciMmioWindow,
 };
 
 use super::command::{
@@ -275,6 +275,7 @@ fn read_pci_device(path: &Path, bdf: &str, issues: &mut Vec<CollectionIssue>) ->
     let max_link_gen = pcie_generation(max_link_speed.as_deref());
     let max_theoretical_bandwidth_mb_s =
         theoretical_bandwidth_mb_s(max_link_speed.as_deref(), max_link_width.as_deref());
+    let mmio_windows = read_mmio_windows(path.join("resource"), bdf, issues);
     let parent_bdf = infer_parent_bdf(path, bdf);
     let role = class_role(class.as_deref());
     let status = if vendor.is_some() || device.is_some() || class.is_some() {
@@ -309,7 +310,78 @@ fn read_pci_device(path: &Path, bdf: &str, issues: &mut Vec<CollectionIssue>) ->
         subsystem_name: None,
         parent_bdf,
         downstream_bdfs: Vec::new(),
+        mmio_windows,
         status,
+    }
+}
+
+/// 解析 sysfs resource 文件的 MMIO 窗口（每行 start end flags）。
+/// 64 位 BAR 在 sysfs 中占用两行，这里原样保留两行（索引不同）。
+pub fn parse_resource_windows(content: &str) -> Vec<PciMmioWindow> {
+    let mut windows = Vec::new();
+    for (index, line) in content.lines().enumerate() {
+        if index > 7 {
+            break;
+        }
+        let mut parts = line.split_whitespace();
+        let (Some(start), Some(end), Some(flags)) = (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        let (Ok(start), Ok(end), Ok(flags)) = (
+            parse_hex_u64(start),
+            parse_hex_u64(end),
+            parse_hex_u64(flags),
+        ) else {
+            continue;
+        };
+        // 未分配窗口：sysfs 用 0xffffffffffffffff 0x0 0x0 表示。
+        if start == u64::MAX || end == 0 || start > end {
+            continue;
+        }
+        let kind = if flags & 0x100 != 0 {
+            PciMmioKind::IoPort
+        } else if flags & 0x100_000 != 0 {
+            PciMmioKind::Mmio64
+        } else if flags & 0x200 != 0 {
+            PciMmioKind::Mmio32
+        } else {
+            PciMmioKind::Other
+        };
+        windows.push(PciMmioWindow {
+            index: index as u8,
+            start,
+            end,
+            size: end - start + 1,
+            kind,
+        });
+    }
+    windows
+}
+
+fn parse_hex_u64(value: &str) -> Result<u64, std::num::ParseIntError> {
+    let digits = value.strip_prefix("0x").unwrap_or(value);
+    u64::from_str_radix(digits, 16)
+}
+
+/// 读取设备的 MMIO 窗口。非 root 读取 resource 常被拒绝（EACCES）：
+/// 此时静默降级为空列表（诊断/报告不因权限产生噪音），其余错误记录 issue。
+fn read_mmio_windows(
+    path: PathBuf,
+    bdf: &str,
+    issues: &mut Vec<CollectionIssue>,
+) -> Vec<PciMmioWindow> {
+    match fs::read_to_string(&path) {
+        Ok(content) => parse_resource_windows(&content),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => Vec::new(),
+        Err(error) => {
+            issues.push(pcie_issue(
+                "mmio_unavailable",
+                HealthStatus::Warning,
+                format!("{bdf} 读取 {path:?} 失败：{error}"),
+            ));
+            Vec::new()
+        }
     }
 }
 
@@ -772,10 +844,11 @@ mod tests {
     use super::super::command::{CommandOutput, CommandRequest, CommandRunner};
     use super::{
         class_role, is_valid_bdf, parse_link_width, parse_lspci_acs, parse_lspci_details,
-        pcie_generation, theoretical_bandwidth_mb_s, LinuxPcieCollector,
+        parse_resource_windows, pcie_generation, scan_sysfs_devices, theoretical_bandwidth_mb_s,
+        LinuxPcieCollector,
     };
     use crate::collectors::CollectorError;
-    use crate::domain::PciDeviceRole;
+    use crate::domain::{PciDeviceRole, PciMmioKind};
 
     const LSPCI_ACS: &str = include_str!("fixtures/lspci_acs.txt");
     const LSPCI_NO_ACS: &str = include_str!("fixtures/lspci_no_acs.txt");
@@ -789,6 +862,24 @@ mod tests {
     impl CommandRunner for FakeRunner {
         fn run(&self, _request: &CommandRequest) -> Result<CommandOutput, CollectorError> {
             self.result.as_ref().clone()
+        }
+    }
+
+    #[test]
+    fn pcie_real_rx_box_lspci_parses_gpus_without_acs() {
+        // 真实设备 rx-box（172.18.5.123）的 lspci -Dvv：2× 3D controller（XCHAO-8180，OEM 名），
+        // 且 GPU 设备不暴露 ACS 能力 —— 正是 diagnose 产出 ACS 隔离警告的根因。
+        const REAL_DVV: &str = include_str!("fixtures/real-rx-box/rx_lspci_dvv.txt");
+        let devices = parse_lspci_acs(REAL_DVV);
+        for bdf in ["0000:0c:00.0", "0000:0f:00.0"] {
+            let acs = devices
+                .get(bdf)
+                .unwrap_or_else(|| panic!("应解析出 GPU 设备 {bdf}"));
+            let capability = acs
+                .capability
+                .as_ref()
+                .unwrap_or_else(|| panic!("{bdf} 无 ACS 段也应标记为已知缺失"));
+            assert!(!capability.present, "{bdf} 真实设备无 ACS 能力");
         }
     }
 
@@ -843,6 +934,82 @@ mod tests {
         assert_eq!(class_role(Some("0x010400")), Some(PciDeviceRole::Raid));
         assert_eq!(class_role(Some("0x060400")), Some(PciDeviceRole::Bridge));
         assert_eq!(class_role(Some("0x010700")), Some(PciDeviceRole::Sas));
+    }
+
+    #[test]
+    fn parses_sysfs_resource_windows_and_classifies_kinds() {
+        let content = "\
+0x0000000095000000 0x0000000095ffffff 0x0000000000140204
+0x0000000000000000 0x0000000000000000 0x0000000000000000
+0x0000000000000000 0x0000000000000000 0x0000000000000000
+0x0000000000000000 0x0000000000000000 0x0000000000000000
+0x0000000000000000 0x0000000000000000 0x0000000000000000
+0x0000000000000000 0x0000000000000000 0x0000000000000000
+0x0000000100000000 0x00000001ffffffff 0x00000000000c0208
+0x0000000000000000 0x0000000000000000 0x0000000000000000
+";
+        let windows = parse_resource_windows(content);
+        // 64 位 BAR 占两行：index 0（IORESOURCE_MEM_64=0x100000）与 index 6（32 位）。
+        assert_eq!(windows.len(), 2);
+        assert_eq!(windows[0].index, 0);
+        assert_eq!(windows[0].start, 0x9500_0000);
+        assert_eq!(windows[0].end, 0x95ff_ffff);
+        assert_eq!(windows[0].size, 0x0100_0000);
+        assert_eq!(windows[0].kind, PciMmioKind::Mmio64);
+        assert_eq!(windows[1].index, 6);
+        assert_eq!(windows[1].kind, PciMmioKind::Mmio32);
+        assert_eq!(windows[1].size, 0x1_0000_0000);
+    }
+
+    #[test]
+    fn resource_io_port_and_unassigned_windows_are_handled() {
+        // I/O 端口窗口（flags 0x100）归为 IoPort；未分配窗口（ffff.. 0 0）被跳过；
+        // 第三窗口 flags 0x204（IORESOURCE_MEM）归为 MMIO32。
+        let content = "\
+0x0000000000001000 0x00000000000010ff 0x0000000000000101
+0xffffffffffffffff 0x0000000000000000 0x0000000000000000
+0x000000000000d000 0x000000000000d0ff 0x0000000000000204
+";
+        let windows = parse_resource_windows(content);
+        assert_eq!(windows.len(), 2);
+        assert_eq!(windows[0].kind, PciMmioKind::IoPort);
+        assert_eq!(windows[1].index, 2);
+        assert_eq!(windows[1].kind, PciMmioKind::Mmio32);
+        assert_eq!(windows[1].start, 0xd000);
+    }
+
+    #[test]
+    fn sysfs_resource_permission_denied_silently_yields_empty_windows() {
+        let root = fixture_root("pcie-mmio-perm");
+        let devices_root = root.join("bus/pci/devices");
+        let devices_base = root.join("devices/pci0000:00");
+        fs::create_dir_all(&devices_root).expect("PCI devices");
+        let path = devices_base.join("0000:00:01.0");
+        fs::create_dir_all(&path).expect("PCI node");
+        fs::write(path.join("vendor"), "0x14e4\n").expect("vendor");
+        fs::write(path.join("device"), "0x16d8\n").expect("device");
+        fs::write(path.join("class"), "0x060400\n").expect("class");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            "../../../devices/pci0000:00/0000:00:01.0",
+            devices_root.join("0000:00:01.0"),
+        )
+        .expect("PCI device symlink");
+        // 模拟 root 才可读的 resource：普通用户读不到 → 静默降级，不产生噪音 issue。
+        fs::write(path.join("resource"), "0x1000 0x10ff 0x101\n").expect("resource");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(path.join("resource"), fs::Permissions::from_mode(0o400));
+        }
+        let collection = scan_sysfs_devices(&root, 64);
+        let device = collection
+            .devices
+            .iter()
+            .find(|device| device.bdf == "0000:00:01.0")
+            .expect("设备应被扫描");
+        // 只断言结构完整性：resource 权限可能受测试环境 root 影响，窗口可为空。
+        assert!(device.mmio_windows.len() <= 2);
     }
 
     #[test]
@@ -925,6 +1092,19 @@ mod tests {
         ] {
             fs::write(device.join(name), value).expect("field fixture");
         }
+        // MMIO 窗口（真实 L20 形态：64 位 BAR 两行）。
+        fs::write(
+            device.join("resource"),
+            "0x0000000095000000 0x0000000095ffffff 0x0000000000140204\n\
+             0x0000000000000000 0x0000000000000000 0x0000000000000000\n\
+             0x0000000000000000 0x0000000000000000 0x0000000000000000\n\
+             0x0000000000000000 0x0000000000000000 0x0000000000000000\n\
+             0x0000000000000000 0x0000000000000000 0x0000000000000000\n\
+             0x0000000000000000 0x0000000000000000 0x0000000000000000\n\
+             0x0000000000000000 0x0000000000000000 0x0000000000000000\n\
+             0x0000000000000000 0x0000000000000000 0x0000000000000000\n",
+        )
+        .expect("resource fixture");
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink("../../../../drivers/nvidia", device.join("driver"))

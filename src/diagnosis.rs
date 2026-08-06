@@ -41,6 +41,7 @@ pub fn diagnose(snapshot: &DashboardSnapshot) -> Vec<DiagnosisFinding> {
     diagnose_services(snapshot, &mut findings);
     diagnose_platform(snapshot, &mut findings);
     diagnose_storage(snapshot, &mut findings);
+    diagnose_logs(snapshot, &mut findings);
     normalize_findings(findings)
 }
 
@@ -199,12 +200,13 @@ fn diagnose_platform(snapshot: &DashboardSnapshot, findings: &mut Vec<DiagnosisF
         == Some(true)
         && platform.iommu.effective == Some(false)
     {
-        findings.push(finding(
+        findings.push(finding_with_suggestion(
             "iommu-not-effective",
             "iommu",
             HealthStatus::Warning,
             "已请求启用 IOMMU，但当前观测未生效",
             ["requested.enabled=true effective=false".to_owned()],
+            "在内核命令行加入 iommu=pt（Intel 另加 intel_iommu=on，AMD 另加 amd_iommu=on）并重启生效",
         ));
     }
 
@@ -214,7 +216,7 @@ fn diagnose_platform(snapshot: &DashboardSnapshot, findings: &mut Vec<DiagnosisF
         .as_ref()
         .filter(|state| state.enabled)
     {
-        findings.push(finding(
+        findings.push(finding_with_suggestion(
             "acs-override",
             "iommu",
             risk_status(override_state.risk),
@@ -223,6 +225,7 @@ fn diagnose_platform(snapshot: &DashboardSnapshot, findings: &mut Vec<DiagnosisF
                 "pcie_acs_override enabled=true value={:?}",
                 override_state.value
             )],
+            "若为预期配置（直通/P2P）可忽略；否则移除 pcie_acs_override 内核参数并重启",
         ));
     }
 
@@ -283,7 +286,7 @@ fn diagnose_platform(snapshot: &DashboardSnapshot, findings: &mut Vec<DiagnosisF
                 device.acs.as_ref().and_then(|acs| acs.control.as_ref()),
             )
         {
-            findings.push(finding(
+            findings.push(finding_with_suggestion(
                 "acs-isolation-disabled",
                 &device.bdf,
                 HealthStatus::Warning,
@@ -292,6 +295,7 @@ fn diagnose_platform(snapshot: &DashboardSnapshot, findings: &mut Vec<DiagnosisF
                     "PCIe {} ACS control 中重定向位为 false",
                     device.bdf
                 )],
+                "如需 GPU 直通/P2P 隔离：启用设备 ACS 或在内核命令行加入 pcie_acs_override=downstream 后重启",
             ));
         }
         if let (Some(current), Some(maximum)) = (
@@ -421,6 +425,24 @@ fn diagnose_storage(snapshot: &DashboardSnapshot, findings: &mut Vec<DiagnosisFi
     }
 }
 
+fn diagnose_logs(snapshot: &DashboardSnapshot, findings: &mut Vec<DiagnosisFinding>) {
+    let Some(logs) = snapshot.logs.as_ref() else {
+        return;
+    };
+    for matched in &logs.matches {
+        findings.push(finding(
+            "log-pattern",
+            &matched.pattern,
+            matched.severity,
+            "系统日志检测到异常模式",
+            [format!(
+                "模式={} 命中={} 来源={:?}",
+                matched.pattern, matched.count, matched.sources
+            )],
+        ));
+    }
+}
+
 fn is_discovered(service: &ServiceSnapshot) -> bool {
     service.process_present == Some(true)
         || service.pid.is_some()
@@ -499,7 +521,22 @@ fn finding<const N: usize>(
             .into_iter()
             .map(|item| bounded(&item, MAX_EVIDENCE_CHARS))
             .collect(),
+        suggestion: None,
     }
+}
+
+/// 带修复建议的诊断结论（只读建议，不代执行）。
+fn finding_with_suggestion<const N: usize>(
+    rule: &str,
+    object: &str,
+    status: HealthStatus,
+    summary: &str,
+    evidence: [String; N],
+    suggestion: &str,
+) -> DiagnosisFinding {
+    let mut result = finding(rule, object, status, summary, evidence);
+    result.suggestion = Some(bounded(suggestion, MAX_SUMMARY_CHARS));
+    result
 }
 
 fn normalize_findings(findings: Vec<DiagnosisFinding>) -> Vec<DiagnosisFinding> {
@@ -595,6 +632,8 @@ mod tests {
             services: Vec::new(),
             findings: Vec::new(),
             platform: None,
+            logs: None,
+            remote: None,
         }
     }
 
@@ -615,6 +654,7 @@ mod tests {
             numa_node: None,
             reset_required: reset,
             xid_codes: Some(xid.to_vec()),
+            smi_tool: None,
         }
     }
 
@@ -723,6 +763,7 @@ mod tests {
                 subsystem_name: None,
                 parent_bdf: None,
                 downstream_bdfs: Vec::new(),
+                mmio_windows: Vec::new(),
                 status: HealthStatus::Healthy,
             }],
             p2p: None,
@@ -779,6 +820,8 @@ mod tests {
                 issues: Vec::new(),
                 status: HealthStatus::Warning,
             }),
+            plugins: Vec::new(),
+            acs_summary: None,
             issues: Vec::new(),
             status: HealthStatus::Warning,
         }
@@ -877,6 +920,64 @@ mod tests {
     }
 
     #[test]
+    fn acs_and_iommu_findings_carry_actionable_suggestions() {
+        let mut snapshot = snapshot();
+        let mut platform = platform();
+        // 默认 platform()：iommu-not-effective + acs-override + acs-isolation-disabled 均触发。
+        snapshot.platform = Some(platform.clone());
+        let findings = diagnose(&snapshot);
+        let by_id = |id: &str| {
+            findings
+                .iter()
+                .find(|finding| finding.id == id)
+                .expect("finding 应存在")
+                .clone()
+        };
+        let iommu = by_id("iommu-not-effective.iommu");
+        assert!(
+            iommu
+                .suggestion
+                .as_deref()
+                .is_some_and(|text| text.contains("iommu=pt")),
+            "IOMMU 建议应含 iommu=pt：{:?}",
+            iommu.suggestion
+        );
+        let override_finding = by_id("acs-override.iommu");
+        assert!(
+            override_finding
+                .suggestion
+                .as_deref()
+                .is_some_and(|text| text.contains("pcie_acs_override")),
+            "ACS override 建议应含参数名：{:?}",
+            override_finding.suggestion
+        );
+        let isolation = by_id("acs-isolation-disabled.0000-03-00.0");
+        assert!(
+            isolation
+                .suggestion
+                .as_deref()
+                .is_some_and(|text| text.contains("pcie_acs_override=downstream")),
+            "ACS 关闭建议应含 downstream：{:?}",
+            isolation.suggestion
+        );
+        // 无 ACS/IOMMU 问题时正常 finding 不携带建议。
+        platform.iommu.requested.as_mut().unwrap().enabled = Some(false);
+        platform.iommu.effective = Some(false);
+        platform.iommu.acs_override = None;
+        platform.pci_devices[0].acs = None;
+        snapshot.platform = Some(platform);
+        let clean = diagnose(&snapshot);
+        assert!(
+            clean.iter().all(|finding| finding.suggestion.is_none()),
+            "无相关问题时不应有建议：{:?}",
+            clean
+                .iter()
+                .filter_map(|finding| finding.suggestion.as_ref())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn does_not_report_missing_evidence_or_speed_only_degradation() {
         let mut snapshot = snapshot();
         let mut platform = platform();
@@ -903,6 +1004,77 @@ mod tests {
         snapshot.platform = Some(platform);
         let findings = diagnose(&snapshot);
         assert!(findings.is_empty(), "unexpected findings: {findings:?}");
+    }
+
+    #[test]
+    fn real_rx_box_shaped_snapshot_diagnoses_clean() {
+        // 用真实设备 rx-box（172.18.5.123）采集形态的数据驱动诊断：
+        // 2× L20 healthy、Hygon CPU、真实日志尾部无异常 → 不应产生任何 finding。
+        let mut snapshot = snapshot();
+        snapshot.host = HostSnapshot {
+            hostname: "rx-box".to_owned(),
+            os: "Ubuntu 24.04.3 LTS".to_owned(),
+            kernel_version: Some("6.8.0-90-generic".to_owned()),
+            architecture: Some("x86_64".to_owned()),
+            cpu_model: Some("Hygon C86 3350  8-core Processor".to_owned()),
+            logical_cpu_count: Some(16),
+            load_1m: Some(0.94),
+            memory_used_mib: Some(12204),
+            memory_total_mib: Some(64037),
+            status: HealthStatus::Healthy,
+            cpu_status: HealthStatus::Healthy,
+            memory_status: HealthStatus::Healthy,
+        };
+        let l20 = |index: u32, temperature: u32, power: f64| GpuSnapshot {
+            index,
+            name: "NVIDIA L20".to_owned(),
+            uuid: Some(format!("GPU-2da85921-1a58-7e3c-5166-47d742d5fe{index}")),
+            pci_address: Some(if index == 0 {
+                "00000000:0C:00.0".to_owned()
+            } else {
+                "00000000:0F:00.0".to_owned()
+            }),
+            status: HealthStatus::Healthy,
+            temperature_celsius: Some(temperature),
+            utilization_percent: Some(0),
+            memory_used_mib: Some(42248),
+            memory_total_mib: Some(46068),
+            power_draw_watts: Some(power),
+            power_limit_watts: Some(350.0),
+            pstate: Some("P0".to_owned()),
+            numa_node: None,
+            reset_required: None,
+            xid_codes: Some(Vec::new()),
+            smi_tool: None,
+        };
+        snapshot.gpus = vec![l20(0, 56, 87.95), l20(1, 57, 89.53)];
+        snapshot.logs = Some(crate::domain::LogSnapshot {
+            status: HealthStatus::Healthy,
+            sources: vec![
+                crate::domain::LogSourceSnapshot {
+                    name: "dmesg".to_owned(),
+                    probe_status: crate::domain::LocalProbeStatus::Succeeded,
+                    command: Some("dmesg -T".to_owned()),
+                    path: None,
+                    lines_tail: vec!["kern log line".to_owned()],
+                    truncated: false,
+                    match_count: 0,
+                },
+                crate::domain::LogSourceSnapshot {
+                    name: "syslog".to_owned(),
+                    probe_status: crate::domain::LocalProbeStatus::Succeeded,
+                    command: None,
+                    path: Some("/var/log/syslog".to_owned()),
+                    lines_tail: vec!["syslog line".to_owned()],
+                    truncated: false,
+                    match_count: 0,
+                },
+            ],
+            matches: Vec::new(),
+            issues: Vec::new(),
+        });
+        let findings = diagnose(&snapshot);
+        assert!(findings.is_empty(), "真实形态数据不应误报：{findings:?}");
     }
 
     #[test]

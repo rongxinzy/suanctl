@@ -6,11 +6,24 @@ description = "Chinese-first read-only diagnostics and monitoring TUI for AI com
 license = "MIT"
 
 [dependencies]
+chrono = "0.4.45"
 clap = { version = "4.5", features = ["derive"] }
 crossterm = "0.28"
 ratatui = "0.29"
+regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+surrealdb = { version = "3", default-features = false, features = ["kv-surrealkv"] }
 tokio = { version = "1.43", features = ["macros", "rt-multi-thread", "time"] }
+toml = "0.8.23"
 wait-timeout = "0.2"
+
+[lints.rust]
+unexpected_cfgs = { level = "deny", check-cfg = ["cfg(suanctl_builtin_p2p)", "cfg(suanctl_builtin_nccl)"] }
+
+# release 构建瘦身：strip 调试符号 + 薄 LTO（agent 部署用 release 版更省带宽）
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1

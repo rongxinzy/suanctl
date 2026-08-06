@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Tabs, Wrap},
+    widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Tabs, Wrap},
     Frame,
 };
 
@@ -82,8 +82,21 @@ pub fn draw(frame: &mut Frame<'_>, state: &AppState) {
 
     draw_page(frame, state, areas[2]);
 
+    let hint = if state.filter_mode() {
+        format!(
+            " 过滤输入：{}（输入字符实时过滤，Backspace 删除，Esc/Enter 退出）",
+            state.filter().unwrap_or("")
+        )
+    } else {
+        match state.filter() {
+            Some(filter) => format!(
+                " 过滤：{filter}（/ 重新编辑，Esc 清除）   ↑↓/PgUp/PgDn 滚动   r 刷新   e 导出   q 退出"
+            ),
+            None => " 1-7/←→ 切页   ↑↓/PgUp/PgDn 滚动   / 过滤   r 刷新   b P2P测速   s 远程扫描   m 导出格式   e 导出   ? 帮助   q 退出".to_owned(),
+        }
+    };
     frame.render_widget(
-        Paragraph::new(" 1-5/←→ 切页   r 刷新   b P2P测速   m 导出格式   e 导出   ? 帮助   q 退出")
+        Paragraph::new(hint)
             .style(Style::default().fg(Color::DarkGray))
             .wrap(Wrap { trim: true }),
         areas[3],
@@ -100,12 +113,309 @@ fn draw_page(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;
     }
+    let scroll = state.current_scroll();
     match state.page {
         UiPage::Overview => draw_overview(frame, state, area),
-        UiPage::Gpu => draw_lines(frame, " GPU ", gpu_lines(state, area.width), area),
-        UiPage::Services => draw_lines(frame, " 服务 ", service_lines(state, area.width), area),
-        UiPage::Diagnosis => draw_lines(frame, " 诊断 ", diagnosis_lines(state), area),
-        UiPage::Reports => draw_lines(frame, " 报告 ", report_lines(state), area),
+        UiPage::Gpu => {
+            let (header, widths, rows) = gpu_table(state, area.width);
+            draw_table(frame, " GPU ", &header, &widths, rows, scroll, area);
+        }
+        UiPage::Services => {
+            let (header, widths, rows) = service_table(state, area.width);
+            draw_table(frame, " 服务 ", &header, &widths, rows, scroll, area);
+        }
+        UiPage::Diagnosis => {
+            let lines = filter_lines(diagnosis_lines(state), state.filter());
+            draw_lines(frame, " 诊断 ", lines, scroll, area);
+        }
+        UiPage::Reports => draw_lines(frame, " 报告 ", report_lines(state), scroll, area),
+        UiPage::Logs => {
+            let lines = filter_lines(log_lines(state, area.width), state.filter());
+            draw_lines(frame, " 日志 ", lines, scroll, area);
+        }
+        UiPage::Remote => draw_lines(
+            frame,
+            " 远程 ",
+            remote_lines(state, area.width),
+            scroll,
+            area,
+        ),
+    }
+}
+
+/// 通用 Table 渲染：表头高亮 + 边框 + 独立滚动（TableState 偏移）。
+fn draw_table(
+    frame: &mut Frame<'_>,
+    title: &str,
+    header: &[&str],
+    widths: &[Constraint],
+    rows: Vec<Row<'static>>,
+    scroll: u16,
+    area: Rect,
+) {
+    let header_cells = header.iter().map(|text| {
+        Cell::from(*text).style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+    });
+    let table = Table::new(rows, widths)
+        .header(Row::new(header_cells))
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .column_spacing(1);
+    let mut state = TableState::default();
+    *state.offset_mut() = scroll as usize;
+    frame.render_stateful_widget(table, area, &mut state);
+}
+
+/// GPU 页表格数据（宽屏全列，窄屏精简列）。
+fn gpu_table(
+    state: &AppState,
+    area_width: u16,
+) -> (Vec<&'static str>, Vec<Constraint>, Vec<Row<'static>>) {
+    if state.snapshot.gpus.is_empty() {
+        return (
+            vec!["编号", "名称", "状态"],
+            vec![
+                Constraint::Length(8),
+                Constraint::Length(24),
+                Constraint::Length(10),
+            ],
+            vec![Row::new(vec![
+                Cell::from("—"),
+                Cell::from("GPU 清单：0 项"),
+                Cell::from("—"),
+            ])],
+        );
+    }
+    if area_width >= 120 {
+        let header = vec![
+            "编号",
+            "名称",
+            "PCI 地址",
+            "NUMA",
+            "温度",
+            "利用率",
+            "显存",
+            "功耗",
+            "P态",
+            "状态",
+            "备注",
+        ];
+        let widths = vec![
+            Constraint::Length(6),
+            Constraint::Length(20),
+            Constraint::Length(15),
+            Constraint::Length(5),
+            Constraint::Length(7),
+            Constraint::Length(8),
+            Constraint::Length(14),
+            Constraint::Length(12),
+            Constraint::Length(4),
+            Constraint::Length(8),
+            Constraint::Length(14),
+        ];
+        let rows = state
+            .snapshot
+            .gpus
+            .iter()
+            .map(|gpu| {
+                let temperature = gpu
+                    .temperature_celsius
+                    .map_or("--".into(), |v| format!("{v}C"));
+                let utilization = gpu
+                    .utilization_percent
+                    .map_or("--".into(), |v| format!("{v}%"));
+                let memory = match (gpu.memory_used_mib, gpu.memory_total_mib) {
+                    (Some(used), Some(total)) => format!("{used}/{total}MiB"),
+                    _ => "--".into(),
+                };
+                let power = match gpu.power_draw_watts {
+                    Some(draw) => gpu
+                        .power_limit_watts
+                        .map_or(format!("{draw:.0}W"), |limit| {
+                            format!("{draw:.0}/{limit:.0}W")
+                        }),
+                    None => "--".into(),
+                };
+                let reset = gpu.reset_required.map_or("未知".to_owned(), |v| {
+                    if v {
+                        "需reset".to_owned()
+                    } else {
+                        "正常".to_owned()
+                    }
+                });
+                let xid = gpu.xid_codes.as_ref().map_or("Xid未知".into(), |codes| {
+                    if codes.is_empty() {
+                        String::from("无Xid")
+                    } else {
+                        format!("Xid:{}", join_u32(codes))
+                    }
+                });
+                let mut cells = vec![
+                    Cell::from(format!("GPU{}", gpu.index)),
+                    Cell::from(shorten(&gpu.name, 20)),
+                    Cell::from(opt_ref(&gpu.pci_address)),
+                    Cell::from(opt(gpu.numa_node)),
+                    Cell::from(temperature),
+                    Cell::from(utilization),
+                    Cell::from(memory),
+                    Cell::from(power),
+                    Cell::from(opt_ref(&gpu.pstate)),
+                    Cell::from(gpu.status.label()),
+                ];
+                let remark = format!("{reset}/{xid}");
+                cells.push(Cell::from(remark));
+                Row::new(cells)
+            })
+            .collect();
+        (header, widths, rows)
+    } else {
+        let header = vec!["编号", "名称", "PCI/NUMA", "温度", "利用率", "显存", "状态"];
+        let widths = vec![
+            Constraint::Length(6),
+            Constraint::Length(18),
+            Constraint::Length(20),
+            Constraint::Length(7),
+            Constraint::Length(8),
+            Constraint::Length(14),
+            Constraint::Length(8),
+        ];
+        let rows = state
+            .snapshot
+            .gpus
+            .iter()
+            .map(|gpu| {
+                let temperature = gpu
+                    .temperature_celsius
+                    .map_or("--".into(), |v| format!("{v}C"));
+                let utilization = gpu
+                    .utilization_percent
+                    .map_or("--".into(), |v| format!("{v}%"));
+                let memory = match (gpu.memory_used_mib, gpu.memory_total_mib) {
+                    (Some(used), Some(total)) => format!("{used}/{total}MiB"),
+                    _ => "--".into(),
+                };
+                Row::new(vec![
+                    Cell::from(format!("GPU{}", gpu.index)),
+                    Cell::from(shorten(&gpu.name, 18)),
+                    Cell::from(format!(
+                        "{}/{}",
+                        opt_ref(&gpu.pci_address),
+                        opt(gpu.numa_node)
+                    )),
+                    Cell::from(temperature),
+                    Cell::from(utilization),
+                    Cell::from(memory),
+                    Cell::from(gpu.status.label()),
+                ])
+            })
+            .collect();
+        (header, widths, rows)
+    }
+}
+
+/// 服务页表格数据（宽屏全列，窄屏精简列）。
+fn service_table(
+    state: &AppState,
+    area_width: u16,
+) -> (Vec<&'static str>, Vec<Constraint>, Vec<Row<'static>>) {
+    if state.snapshot.services.is_empty() {
+        return (
+            vec!["服务", "状态"],
+            vec![Constraint::Length(28), Constraint::Length(10)],
+            vec![Row::new(vec![
+                Cell::from("推理服务清单：0 项"),
+                Cell::from("—"),
+            ])],
+        );
+    }
+    let rows = state
+        .snapshot
+        .services
+        .iter()
+        .map(|service| {
+            let source = service_source(service);
+            let endpoint = service
+                .endpoint
+                .clone()
+                .unwrap_or_else(|| "端点未知".into());
+            let models = if service.observed_models.is_empty() {
+                service.model.clone().unwrap_or_else(|| "模型未知".into())
+            } else {
+                format!("模型：{}", join_strings(&service.observed_models, 2))
+            };
+            if area_width >= 120 {
+                let probes = format!(
+                    "{}/{}/{}",
+                    probe_short(&service.health_probe),
+                    probe_short(&service.models_probe),
+                    probe_short(&service.metrics_probe)
+                );
+                Row::new(vec![
+                    Cell::from(shorten(&service.name, 20)),
+                    Cell::from(service.engine.label()),
+                    Cell::from(shorten(&source, 18)),
+                    Cell::from(shorten(&endpoint, 30)),
+                    Cell::from(shorten(&models, 26)),
+                    Cell::from(probes),
+                    Cell::from(service.status.label()),
+                ])
+            } else {
+                Row::new(vec![
+                    Cell::from(shorten(&service.name, 18)),
+                    Cell::from(service.engine.label()),
+                    Cell::from(shorten(&endpoint, 30)),
+                    Cell::from(service.status.label()),
+                ])
+            }
+        })
+        .collect();
+    if area_width >= 120 {
+        (
+            vec![
+                "服务",
+                "引擎",
+                "来源",
+                "端点",
+                "模型",
+                "探针(health/models/metrics)",
+                "状态",
+            ],
+            vec![
+                Constraint::Length(20),
+                Constraint::Length(9),
+                Constraint::Length(18),
+                Constraint::Length(30),
+                Constraint::Length(26),
+                Constraint::Length(24),
+                Constraint::Length(8),
+            ],
+            rows,
+        )
+    } else {
+        (
+            vec!["服务", "引擎", "端点", "状态"],
+            vec![
+                Constraint::Length(18),
+                Constraint::Length(9),
+                Constraint::Length(30),
+                Constraint::Length(8),
+            ],
+            rows,
+        )
+    }
+}
+
+/// 按关键字过滤行列表；空关键字或不处于过滤模式时原样返回。
+fn filter_lines(lines: Vec<Line<'static>>, filter: Option<&str>) -> Vec<Line<'static>> {
+    match filter.map(str::trim).filter(|value| !value.is_empty()) {
+        None => lines,
+        Some(keyword) => lines
+            .into_iter()
+            .filter(|line| line.to_string().contains(keyword))
+            .collect(),
     }
 }
 
@@ -119,12 +429,14 @@ fn draw_overview(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
             frame,
             " 主机与资源 ",
             overview_host_lines(state),
+            0,
             columns[0],
         );
         draw_lines(
             frame,
             " 平台与健康 ",
             overview_platform_lines(state),
+            0,
             columns[1],
         );
     } else {
@@ -132,15 +444,23 @@ fn draw_overview(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
             frame,
             " 总览 ",
             [overview_host_lines(state), overview_platform_lines(state)].concat(),
+            0,
             area,
         );
     }
 }
 
-fn draw_lines(frame: &mut Frame<'_>, title: &str, lines: Vec<Line<'static>>, area: Rect) {
+fn draw_lines(
+    frame: &mut Frame<'_>,
+    title: &str,
+    lines: Vec<Line<'static>>,
+    scroll: u16,
+    area: Rect,
+) {
     frame.render_widget(
         Paragraph::new(lines)
             .block(Block::default().borders(Borders::ALL).title(title))
+            .scroll((scroll, 0))
             .wrap(Wrap { trim: true }),
         area,
     );
@@ -243,6 +563,12 @@ fn overview_platform_lines(state: &AppState) -> Vec<Line<'static>> {
             "PCIe 设备：{}",
             platform.pci_devices.len()
         )));
+        if let Some(summary) = &platform.acs_summary {
+            lines.push(Line::from(format!(
+                "PCIe ACS：支持 {} · 开启 {} · 全部关闭 {}",
+                summary.supported, summary.enabled, summary.disabled
+            )));
+        }
         if let Some(p2p) = &platform.p2p {
             let supported = p2p
                 .links
@@ -270,195 +596,21 @@ fn overview_platform_lines(state: &AppState) -> Vec<Line<'static>> {
         } else {
             lines.push(Line::from("存储快照：未知"));
         }
+        if !platform.plugins.is_empty() {
+            lines.push(Line::from(format!("插件：{} 个", platform.plugins.len())));
+        }
     } else {
         lines.push(Line::from("平台基线：未知"));
         lines.push(Line::from("PCIe/存储：未知"));
     }
-    lines
-}
-
-fn gpu_lines(state: &AppState, width: u16) -> Vec<Line<'static>> {
-    let mut lines = if width >= 120 {
-        vec![Line::from("编号  名称                  PCI 地址        NUMA  温度  利用率  显存       功耗       P态  状态")]
-    } else {
-        vec![Line::from(
-            "编号  名称             PCI/NUMA       温度  利用率  显存       状态",
-        )]
-    };
-    if state.snapshot.gpus.is_empty() {
-        lines.push(Line::from("GPU 清单：0 项"));
-    }
-    for gpu in &state.snapshot.gpus {
-        let temperature = gpu
-            .temperature_celsius
-            .map_or("--".into(), |v| format!("{v}C"));
-        let utilization = gpu
-            .utilization_percent
-            .map_or("--".into(), |v| format!("{v}%"));
-        let memory = match (gpu.memory_used_mib, gpu.memory_total_mib) {
-            (Some(used), Some(total)) => format!("{used}/{total}MiB"),
-            _ => "--".into(),
-        };
-        let reset = gpu
-            .reset_required
-            .map_or("未知", |v| if v { "需reset" } else { "正常" });
-        let xid = gpu.xid_codes.as_ref().map_or("未知".into(), |codes| {
-            if codes.is_empty() {
-                String::from("无Xid")
-            } else {
-                format!("Xid:{}", join_u32(codes))
-            }
-        });
-        if width >= 120 {
-            let power = match gpu.power_draw_watts {
-                Some(draw) => gpu
-                    .power_limit_watts
-                    .map_or(format!("{draw:.0}W"), |limit| {
-                        format!("{draw:.0}/{limit:.0}W")
-                    }),
-                None => "--".into(),
-            };
-            lines.push(Line::from(format!(
-                "GPU{}  {:<20} {:<15} {:<4} {:>4}  {:>5}  {:<10} {:<10} {:<3}  {}",
-                gpu.index,
-                shorten(&gpu.name, 20),
-                opt_ref(&gpu.pci_address),
-                opt(gpu.numa_node),
-                temperature,
-                utilization,
-                memory,
-                power,
-                opt_ref(&gpu.pstate),
-                gpu.status.label()
-            )));
-            lines.push(Line::from(format!("      reset={}  {}", reset, xid)));
-        } else {
-            lines.push(Line::from(format!(
-                "GPU{}  {:<16} {:<15} {:>4}  {:>5}  {:<10} {}",
-                gpu.index,
-                shorten(&gpu.name, 16),
-                format!("{}/{}", opt_ref(&gpu.pci_address), opt(gpu.numa_node)),
-                temperature,
-                utilization,
-                memory,
-                gpu.status.label()
-            )));
-            lines.push(Line::from(format!(
-                "      pstate={}  reset={}  {}",
-                opt_ref(&gpu.pstate),
-                reset,
-                xid
-            )));
-        }
-        if let Some(device) = pci_device_for_gpu(state, gpu.pci_address.as_deref()) {
-            lines.push(Line::from(format!(
-                "      PCIe 协商 {} / 能力 {} · 理论单向上限",
-                pcie_link_text(
-                    device.current_link_gen,
-                    device.current_link_width.as_deref(),
-                    device.current_theoretical_bandwidth_mb_s
-                ),
-                pcie_link_text(
-                    device.max_link_gen,
-                    device.max_link_width.as_deref(),
-                    device.max_theoretical_bandwidth_mb_s
-                )
-            )));
-        }
-    }
-    if let Some(p2p) = state
-        .snapshot
-        .platform
-        .as_ref()
-        .and_then(|platform| platform.p2p.as_ref())
-    {
-        lines.push(Line::from(""));
-        lines.push(Line::from("GPU P2P 驱动能力矩阵"));
-        for link in p2p.links.iter().take(32) {
-            lines.push(Line::from(format!(
-                "GPU{}→GPU{} path={} 读={} 写={} PCIe={} NVLink={} 原子={}",
-                link.source_gpu,
-                link.target_gpu,
-                link.topology_path.as_deref().unwrap_or("未知"),
-                link.read.label(),
-                link.write.label(),
-                link.pcie.label(),
-                link.nvlink.label(),
-                link.atomics.label()
-            )));
-        }
-        if p2p.links.len() > 32 {
-            lines.push(Line::from(format!(
-                "P2P 列表已截断：32/{}",
-                p2p.links.len()
-            )));
-        }
+    if let Some(logs) = &state.snapshot.logs {
         lines.push(Line::from(format!(
-            "NVBandwidth 状态：{} · 测试项：device_to_device_memcpy_write_ce",
-            p2p.benchmark.status.label()
+            "系统日志：{}  ·  异常模式：{} 条",
+            logs.status.label(),
+            logs.matches.len()
         )));
-        for measurement in p2p.benchmark.measurements.iter().take(32) {
-            lines.push(Line::from(format!(
-                "GPU{}→GPU{} 实测 {:.2} GB/s",
-                measurement.source_gpu, measurement.target_gpu, measurement.gigabytes_per_second
-            )));
-        }
-    }
-    lines
-}
-
-fn service_lines(state: &AppState, width: u16) -> Vec<Line<'static>> {
-    let mut lines = vec![Line::from(if width >= 120 {
-        "服务                  引擎       来源/PID          端点                         探针(health/models/metrics)  状态"
     } else {
-        "服务             引擎       来源       端点/状态"
-    })];
-    if state.snapshot.services.is_empty() {
-        lines.push(Line::from("推理服务清单：0 项"));
-    }
-    for service in &state.snapshot.services {
-        let source = service_source(service);
-        let endpoint = service
-            .endpoint
-            .clone()
-            .unwrap_or_else(|| "端点未知".into());
-        let probes = format!(
-            "{}/{}/{}",
-            probe_short(&service.health_probe),
-            probe_short(&service.models_probe),
-            probe_short(&service.metrics_probe)
-        );
-        let models = if service.observed_models.is_empty() {
-            service.model.clone().unwrap_or_else(|| "模型未知".into())
-        } else {
-            format!("模型：{}", join_strings(&service.observed_models, 2))
-        };
-        if width >= 120 {
-            lines.push(Line::from(format!(
-                "{:<20} {:<9} {:<16} {:<28} {:<24} {}",
-                shorten(&service.name, 20),
-                service.engine.label(),
-                shorten(&source, 16),
-                shorten(&endpoint, 28),
-                probes,
-                service.status.label()
-            )));
-            lines.push(Line::from(format!("      {}", shorten(&models, 100))));
-        } else {
-            lines.push(Line::from(format!(
-                "{:<15} {:<9} {:<10} {}",
-                shorten(&service.name, 15),
-                service.engine.label(),
-                shorten(&source, 10),
-                shorten(&endpoint, 42)
-            )));
-            lines.push(Line::from(format!(
-                "      {}  探针：{}  状态：{}",
-                shorten(&models, 30),
-                probes,
-                service.status.label()
-            )));
-        }
+        lines.push(Line::from("系统日志：未知"));
     }
     lines
 }
@@ -488,6 +640,9 @@ fn finding_lines(finding: &DiagnosisFinding) -> Vec<Line<'static>> {
             join_strings(&finding.evidence, 3)
         )));
     }
+    if let Some(suggestion) = &finding.suggestion {
+        lines.push(Line::from(format!("      建议：{suggestion}")));
+    }
     lines
 }
 
@@ -503,7 +658,7 @@ fn report_lines(state: &AppState) -> Vec<Line<'static>> {
             "captured_at：{}",
             timestamp(state.snapshot.captured_at)
         )),
-        Line::from("快照内容：主机 / GPU / 服务 / 诊断 / 平台基线"),
+        Line::from("快照内容：主机 / GPU / 服务 / 诊断 / 平台基线 / 系统日志 / P2P"),
         Line::from(format!(
             "采集状态：{}  ·  采集问题：{} 条",
             state.collection_status.label(),
@@ -531,6 +686,194 @@ fn report_lines(state: &AppState) -> Vec<Line<'static>> {
     lines
 }
 
+fn remote_lines(state: &AppState, width: u16) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from("远程设备（按 s 指定目标扫描 · 不自动扫描全部）"),
+        Line::from(""),
+    ];
+    // 候选设备（只读展示，不连接）
+    if state.remote_candidates.is_empty() {
+        lines.push(Line::from(
+            "候选设备：~/.ssh/config 未找到可用主机（或均为通配条目）",
+        ));
+    } else if state.remote_target_mode() {
+        // 选择模式：光标 + 快捷数字
+        let selected = state.remote_selection();
+        lines.push(Line::from(format!(
+            "候选设备（{} 台）：↑/↓ 或数字选择，Enter 扫描选中设备，Esc 取消",
+            state.remote_candidates.len()
+        )));
+        for (index, alias) in state.remote_candidates.iter().enumerate() {
+            let marker = if index == selected { "▶" } else { " " };
+            let number = if index < 9 {
+                format!("{}", index + 1)
+            } else {
+                " ".to_owned()
+            };
+            lines.push(Line::from(format!("{marker} {number} {alias}")));
+        }
+    } else {
+        lines.push(Line::from(format!(
+            "候选设备（{} 台，仅展示不连接）：",
+            state.remote_candidates.len()
+        )));
+        for alias in &state.remote_candidates {
+            lines.push(Line::from(format!("  {alias}")));
+        }
+    }
+    lines.push(Line::from(""));
+    // 操作提示
+    if state.remote_target_mode() {
+        let selected = state
+            .remote_candidates
+            .get(state.remote_selection())
+            .map_or("？", |alias| alias.as_str());
+        lines.push(Line::from(format!(
+            "扫描目标：{selected}（Enter 确认 · Esc 取消）"
+        )));
+    } else {
+        lines.push(Line::from(
+            "按 s 选择要扫描的设备（↑/↓ 或数字 1-9，回车后扫描该台）",
+        ));
+    }
+    lines.push(Line::from(""));
+    // 扫描结果
+    let Some(remote) = state.snapshot.remote.as_ref() else {
+        return lines;
+    };
+    if remote.hosts.is_empty() {
+        lines.push(Line::from("远程设备：无扫描结果（未指定目标或目标不存在）"));
+        return lines;
+    }
+    lines.push(Line::from(format!("扫描结果（{}）：", remote.hosts.len())));
+    for host in &remote.hosts {
+        let reachable = if host.reachable {
+            "可达"
+        } else {
+            "不可达"
+        };
+        let sudo = if host.sudo_available {
+            "sudo 可用"
+        } else if host.reachable {
+            "无 sudo"
+        } else {
+            "-"
+        };
+        let degraded = if host.degraded { " [已降级]" } else { "" };
+        lines.push(Line::from(format!(
+            "{}（{}） {} / {}{}",
+            host.alias,
+            host.hostname.as_deref().unwrap_or("?"),
+            reachable,
+            sudo,
+            degraded
+        )));
+        if let Some(info) = &host.host_info {
+            lines.push(Line::from(format!("    {}", shorten(info, width as usize))));
+        }
+        if let Some(gpu) = &host.gpu_summary {
+            lines.push(Line::from(format!(
+                "    GPU: {}",
+                shorten(gpu, width as usize)
+            )));
+        }
+        for issue in host.issues.iter().take(2) {
+            lines.push(Line::from(format!(
+                "    [{}] {}",
+                issue.status.label(),
+                shorten(&issue.message, width as usize)
+            )));
+        }
+        lines.push(Line::from(""));
+    }
+    lines.extend(remote.issues.iter().take(3).map(|issue| {
+        Line::from(format!(
+            "[{}] {}：{}",
+            issue.status.label(),
+            issue.code,
+            shorten(&issue.message, 60)
+        ))
+    }));
+    lines
+}
+
+fn log_lines(state: &AppState, width: u16) -> Vec<Line<'static>> {
+    let Some(logs) = state.snapshot.logs.as_ref() else {
+        return vec![Line::from("日志采集：未启用或不可用")];
+    };
+    let mut lines = vec![
+        Line::from(format!("系统日志状态：{}", logs.status.label())),
+        Line::from(format!(
+            "来源数：{} · 异常模式数：{}",
+            logs.sources.len(),
+            logs.matches.len()
+        )),
+        Line::from(""),
+    ];
+    if logs.sources.is_empty() {
+        lines.push(Line::from("无可用日志来源。"));
+    } else {
+        lines.push(Line::from("-- 日志来源 --"));
+        for source in &logs.sources {
+            let probe = match source.probe_status {
+                crate::domain::LocalProbeStatus::Succeeded => "可用",
+                crate::domain::LocalProbeStatus::Failed => "失败",
+                crate::domain::LocalProbeStatus::NotAttempted => "未尝试",
+                crate::domain::LocalProbeStatus::Unknown => "未知",
+                crate::domain::LocalProbeStatus::Unavailable => "不可用",
+            };
+            lines.push(Line::from(format!(
+                "{} [{}] 异常 {} 条{}",
+                source.name,
+                probe,
+                source.match_count,
+                if source.truncated {
+                    "（尾部截断）"
+                } else {
+                    ""
+                }
+            )));
+            for tail in source.lines_tail.iter().take(3) {
+                lines.push(Line::from(format!(
+                    "    {}",
+                    shorten(tail, width.saturating_sub(6) as usize)
+                )));
+            }
+        }
+        lines.push(Line::from(""));
+    }
+    if logs.matches.is_empty() {
+        lines.push(Line::from("未检测到异常模式。"));
+    } else {
+        lines.push(Line::from("-- 异常模式 --"));
+        for matched in &logs.matches {
+            lines.push(Line::from(format!(
+                "[{}] {}：{} 次（{}）",
+                matched.severity.label(),
+                matched.pattern,
+                matched.count,
+                matched.sources.join("、")
+            )));
+            for example in matched.examples.iter().take(2) {
+                lines.push(Line::from(format!(
+                    "  {}",
+                    shorten(example, width as usize)
+                )));
+            }
+        }
+        lines.push(Line::from(""));
+    }
+    lines.extend(logs.issues.iter().take(5).map(|issue| {
+        Line::from(format!(
+            "[{}] {}：{}",
+            issue.status.label(),
+            issue.code,
+            shorten(&issue.message, 60)
+        ))
+    }));
+    lines
+}
+
 fn draw_help(frame: &mut Frame<'_>, area: Rect) {
     let width = area.width.saturating_sub(4).clamp(1, 72);
     let height = area.height.saturating_sub(2).clamp(1, 10);
@@ -544,9 +887,12 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect) {
     frame.render_widget(
         Paragraph::new(vec![
             Line::from("快捷键"),
-            Line::from("1-5：切换页面   ←/→：翻页"),
-            Line::from("r：采集更新  b：P2P 测速  m：导出格式"),
-            Line::from("e：报告导出  ?：帮助  q：退出"),
+            Line::from("1-7：切换页面   ←/→：翻页"),
+            Line::from("↑↓/PgUp/PgDn：滚动   Home/End：顶部/底部"),
+            Line::from("/：过滤（日志/诊断页）   r：采集更新"),
+            Line::from("b：P2P 测速  s：远程设备扫描（远程页）"),
+            Line::from("m：导出格式  e：报告导出  ?：帮助  q：退出"),
+            Line::from("页面：总览 / GPU / 服务 / 诊断 / 报告 / 日志 / 远程"),
         ])
         .block(Block::default().borders(Borders::ALL).title(" 帮助 "))
         .wrap(Wrap { trim: true }),
@@ -577,6 +923,11 @@ fn draw_operation(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
                         state.collection_issues.len(),
                         state.report_format.label()
                     ),
+                    crate::app::UiOperationKind::RemoteScan => {
+                        "范围：~/.ssh/config 免密主机 · 先检测权限后降级采集".to_owned()
+                    }
+                    // 刷新不经过确认弹窗，此处不会渲染。
+                    crate::app::UiOperationKind::Refresh => unreachable!(),
                 }),
                 Line::from("Enter / y：执行    Esc / n：返回"),
             ],
@@ -586,6 +937,7 @@ fn draw_operation(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             vec![
                 Line::from(format!("操作：{}", kind.label())),
                 Line::from("任务状态：执行中"),
+                Line::from("Esc：取消（后台任务继续，完成时丢弃结果）"),
             ],
         ),
         UiOperationState::Succeeded { kind, message } => (
@@ -665,56 +1017,6 @@ fn timestamp(value: u64) -> String {
     }
 }
 
-fn pci_device_for_gpu<'a>(
-    state: &'a AppState,
-    pci_address: Option<&str>,
-) -> Option<&'a crate::domain::PciDeviceSnapshot> {
-    let address = normalized_bdf(pci_address?);
-    state
-        .snapshot
-        .platform
-        .as_ref()?
-        .pci_devices
-        .iter()
-        .find(|device| normalized_bdf(&device.bdf) == address)
-}
-
-fn normalized_bdf(value: &str) -> String {
-    let mut pieces = value.splitn(3, ':');
-    let domain = pieces.next().unwrap_or(value);
-    let bus = pieces.next();
-    let device = pieces.next();
-    match (bus, device) {
-        (Some(bus), Some(device)) => {
-            let domain = if domain.len() > 4 {
-                &domain[domain.len() - 4..]
-            } else {
-                domain
-            };
-            format!("{domain}:{bus}:{device}").to_ascii_lowercase()
-        }
-        _ => value.to_ascii_lowercase(),
-    }
-}
-
-fn pcie_link_text(generation: Option<u8>, width: Option<&str>, mb_s: Option<u64>) -> String {
-    let generation = generation.map_or("Gen?".to_owned(), |value| format!("Gen{value}"));
-    let width = pcie_width_text(width);
-    let bandwidth = mb_s.map_or("带宽未知".to_owned(), |value| {
-        format!("{:.2} GB/s", value as f64 / 1000.0)
-    });
-    format!("{generation} {width} {bandwidth}")
-}
-
-fn pcie_width_text(width: Option<&str>) -> String {
-    width.map_or("x?".to_owned(), |value| {
-        if value.starts_with(['x', 'X']) {
-            value.to_owned()
-        } else {
-            format!("x{value}")
-        }
-    })
-}
 fn opt<T: ToString>(value: Option<T>) -> String {
     value.map_or("--".into(), |v| v.to_string())
 }
@@ -797,6 +1099,60 @@ mod tests {
     }
 
     #[test]
+    fn remote_selection_mode_renders_cursor_and_candidates() {
+        let snapshot = demo::snapshot();
+        let mut state = AppState::new(snapshot);
+        state.page = UiPage::Remote;
+        state.remote_candidates = vec!["host-a".to_owned(), "wfk8smaster3".to_owned()];
+        state.handle_key(crossterm::event::KeyCode::Char('s').into());
+        state.handle_key(crossterm::event::KeyCode::Down.into());
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &state))
+            .expect("render selection mode");
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        // 光标 ▶ 与选中项同行（buffer 中宽字符后有空列，逐行匹配）
+        let cursor_line = text
+            .lines()
+            .find(|line| line.contains('▶'))
+            .expect("应渲染光标");
+        assert!(
+            cursor_line.contains("wfk8smaster3"),
+            "光标应标在选中项：{cursor_line}"
+        );
+        // buffer 中 CJK 字符列间有空格，比较时去除
+        let compact: String = text.chars().filter(|character| *character != ' ').collect();
+        assert!(
+            compact.contains("扫描目标") && compact.contains("Enter扫描选中设备"),
+            "应显示当前目标与操作提示：{text}"
+        );
+    }
+
+    #[test]
+    fn gpu_and_services_pages_render_table_widget() {
+        // GPU / 服务页应使用 Table 组件：有边框字符与表头（不再是纯文本行）。
+        for page in [UiPage::Gpu, UiPage::Services] {
+            let text = render(120, 30, page, true);
+            assert!(
+                text.contains('┌') && text.contains('┐'),
+                "{page:?} 应有表格边框：{text}"
+            );
+            let compact: String = text.chars().filter(|c| *c != ' ').collect();
+            assert!(
+                compact.contains("编号") || compact.contains("服务"),
+                "{page:?} 应有表头：{text}"
+            );
+        }
+    }
+
+    #[test]
     fn runtime_has_no_stale_demo_copy_and_demo_has_explicit_warning() {
         let runtime = render(120, 30, UiPage::Overview, false);
         assert!(!runtime.contains("不调用 nvidia-smi"));
@@ -814,18 +1170,5 @@ mod tests {
                 .chars()
                 .any(|character| text.contains(character)));
         }
-    }
-
-    #[test]
-    fn pcie_ui_text_keeps_theoretical_rate_explicit() {
-        assert_eq!(
-            pcie_link_text(Some(4), Some("x16"), Some(31_508)),
-            "Gen4 x16 31.51 GB/s"
-        );
-        assert_eq!(
-            pcie_link_text(Some(5), Some("16"), Some(63_015)),
-            "Gen5 x16 63.02 GB/s"
-        );
-        assert_eq!(normalized_bdf("00000000:3B:00.0"), "0000:3b:00.0");
     }
 }

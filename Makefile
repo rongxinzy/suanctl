@@ -6,7 +6,10 @@ REPORT_FORMAT ?= markdown
 
 .DEFAULT_GOAL := help
 
-.PHONY: help fmt fmt-check check test clippy verify build tui demo doctor doctor-json p2p p2p-benchmark report clean
+.PHONY: help fmt fmt-check check test clippy verify build tui demo doctor doctor-json p2p p2p-benchmark report dist dist-musl clean
+
+DIST_VERSION ?= 0.1.0
+DIST_NAME := suanctl-$(DIST_VERSION)-$(shell uname -s)-$(shell uname -m)
 
 help:
 	@printf '%s\n' \
@@ -37,7 +40,7 @@ check:
 	$(CARGO) check $(CARGO_FLAGS)
 
 test:
-	$(CARGO) test $(CARGO_FLAGS)
+	$(CARGO) test $(CARGO_FLAGS) -- --test-threads=4
 
 clippy:
 	$(CARGO) clippy --all-targets $(CARGO_FLAGS) -- -D warnings
@@ -72,3 +75,26 @@ report:
 
 clean:
 	$(CARGO) clean
+
+# 打包发布：release 二进制 + 文档 + 示例插件，输出 dist/$(DIST_NAME).tar.gz
+dist:
+	$(CARGO) build --release $(CARGO_FLAGS)
+	rm -rf dist/$(DIST_NAME) dist/$(DIST_NAME).tar.gz
+	mkdir -p dist/$(DIST_NAME)
+	cp target/release/suanctl dist/$(DIST_NAME)/
+	cp README.md LICENSE docs/ROADMAP.md dist/$(DIST_NAME)/ 2>/dev/null || cp README.md LICENSE dist/$(DIST_NAME)/
+	cp -r examples dist/$(DIST_NAME)/examples
+	cd dist && tar -czf $(DIST_NAME).tar.gz $(DIST_NAME)
+	@echo "打包完成：dist/$(DIST_NAME).tar.gz"
+
+# 静态链接 musl 构建（适合部署到 glibc 较老的机器）
+dist-musl:
+	@rustup target list --installed 2>/dev/null | grep -q x86_64-unknown-linux-musl || { echo 'musl target 未安装：rustup target add x86_64-unknown-linux-musl'; exit 2; }
+	$(CARGO) build --release --target x86_64-unknown-linux-musl $(CARGO_FLAGS)
+	rm -rf dist/$(DIST_NAME)-musl dist/$(DIST_NAME)-musl.tar.gz
+	mkdir -p dist/$(DIST_NAME)-musl
+	cp target/x86_64-unknown-linux-musl/release/suanctl dist/$(DIST_NAME)-musl/
+	cp README.md LICENSE docs/ROADMAP.md dist/$(DIST_NAME)-musl/ 2>/dev/null || cp README.md LICENSE dist/$(DIST_NAME)-musl/
+	cp -r examples dist/$(DIST_NAME)-musl/examples
+	cd dist && tar -czf $(DIST_NAME)-musl.tar.gz $(DIST_NAME)-musl
+	@echo "打包完成：dist/$(DIST_NAME)-musl.tar.gz"
