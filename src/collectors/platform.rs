@@ -17,7 +17,7 @@ use super::command::{
     CommandRequest, CommandRunner, ProcessCommandRunner, DEFAULT_STDERR_LIMIT, DEFAULT_STDOUT_LIMIT,
 };
 use super::cuda::{parse_nvidia_smi_header, CudaStackCollector, NvidiaSmiHeader};
-use super::p2p::NvidiaP2pCollector;
+use super::p2p::ChainP2pCollector;
 use super::pcie::LinuxPcieCollector;
 use super::storage::LinuxStorageCollector;
 use super::{CollectorError, PlatformCollector};
@@ -119,7 +119,7 @@ impl<R: CommandRunner + Clone> LinuxPlatformCollector<R> {
             .with_output_limits(self.stdout_limit, self.stderr_limit)
             .collect_snapshot(&pcie.devices);
 
-        let p2p = NvidiaP2pCollector::with_runner(self.runner.clone())
+        let p2p = ChainP2pCollector::with_runner(self.runner.clone())
             .with_timeout(self.timeout)
             .with_output_limits(self.stdout_limit, self.stderr_limit)
             .collect_topology();

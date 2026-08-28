@@ -695,6 +695,7 @@ fn is_hex_id(value: &str) -> bool {
 fn vendor_display_name(vendor: &str) -> Option<String> {
     let name = match vendor.to_ascii_lowercase().as_str() {
         "10de" => "NVIDIA",
+        "1e36" => "Enflame",
         "8086" => "Intel",
         "1002" | "1022" => "AMD",
         "1000" => "Broadcom/LSI",
@@ -705,6 +706,250 @@ fn vendor_display_name(vendor: &str) -> Option<String> {
         _ => return None,
     };
     Some(name.to_owned())
+}
+
+#[derive(Debug)]
+struct TopoNode {
+    bdf: String,
+    children: Vec<usize>,
+    endpoint: Option<String>,
+}
+
+/// 加速器端点（GPU/GCU：PCI class 03xx 显示类 / 12xx 协处理器类）的 PCIe 上行
+/// 拓扑树。按 parent_bdf 自叶向根回溯并合并共享分支，返回可直接逐行渲染的
+/// 文本树；没有可识别加速器或父链信息时返回空 vec。
+pub fn accelerator_topology_lines(
+    devices: &[PciDeviceSnapshot],
+    gpus: &[crate::domain::GpuSnapshot],
+    max_lines: usize,
+) -> Vec<String> {
+    let by_bdf: BTreeMap<&str, &PciDeviceSnapshot> = devices
+        .iter()
+        .map(|device| (device.bdf.as_str(), device))
+        .collect();
+    let gpu_label = |bdf: &str| {
+        let normalized = bdf.to_ascii_lowercase();
+        gpus.iter()
+            .find(|gpu| {
+                gpu.pci_address
+                    .as_deref()
+                    .is_some_and(|address| address.to_ascii_lowercase() == normalized)
+            })
+            .map(|gpu| format!("GPU{} {}", gpu.index, gpu.name))
+    };
+
+    // 扁平节点池：同一 BDF 在父链上位置唯一，全局去重后共享分支自然合并。
+    let mut nodes: Vec<TopoNode> = Vec::new();
+    let mut node_index: BTreeMap<String, usize> = BTreeMap::new();
+    let mut roots: Vec<usize> = Vec::new();
+
+    for device in devices {
+        if !is_accelerator_class(device.class.as_deref()) {
+            continue;
+        }
+        // 自叶向根回溯（带环与缺失保护），再反转为 根→叶 链。
+        let chain = upstream_chain(device, &by_bdf);
+
+        let mut parent_idx: Option<usize> = None;
+        for (depth, bdf) in chain.iter().enumerate() {
+            let idx = *node_index.entry(bdf.clone()).or_insert_with(|| {
+                nodes.push(TopoNode {
+                    bdf: bdf.clone(),
+                    children: Vec::new(),
+                    endpoint: None,
+                });
+                nodes.len() - 1
+            });
+            match parent_idx {
+                Some(parent) => {
+                    if !nodes[parent].children.contains(&idx) {
+                        nodes[parent].children.push(idx);
+                    }
+                }
+                None => {
+                    if !roots.contains(&idx) {
+                        roots.push(idx);
+                    }
+                }
+            }
+            parent_idx = Some(idx);
+            if depth + 1 == chain.len() {
+                let mut label = gpu_label(&device.bdf).unwrap_or_else(|| device_label(device));
+                if let Some(numa) = device.numa_node {
+                    label.push_str(&format!(" · NUMA{numa}"));
+                }
+                nodes[idx].endpoint = Some(label);
+            }
+        }
+    }
+    if roots.is_empty() {
+        return Vec::new();
+    }
+
+    let mut lines = Vec::new();
+    for (position, root) in roots.iter().enumerate() {
+        render_topo_node(
+            &mut lines,
+            &nodes,
+            &by_bdf,
+            *root,
+            "",
+            position + 1 == roots.len(),
+            true,
+        );
+    }
+    if lines.len() > max_lines {
+        lines.truncate(max_lines);
+        lines.push(format!("…（拓扑树已截断，仅展示前 {max_lines} 行）"));
+    }
+    lines
+}
+
+fn is_accelerator_class(class: Option<&str>) -> bool {
+    let Some(class) = class else {
+        return false;
+    };
+    let class = class.trim().to_ascii_lowercase();
+    class.starts_with("0x03") || class.starts_with("0x12")
+}
+
+/// 自叶向根回溯父链（环/缺失保护），返回 根→叶 顺序的 BDF 链。
+fn upstream_chain(
+    device: &PciDeviceSnapshot,
+    by_bdf: &BTreeMap<&str, &PciDeviceSnapshot>,
+) -> Vec<String> {
+    let mut chain = vec![device.bdf.clone()];
+    let mut cursor = device.parent_bdf.clone();
+    while let Some(parent) = cursor {
+        if chain.len() >= 32 || chain.contains(&parent) || !by_bdf.contains_key(parent.as_str()) {
+            break;
+        }
+        chain.push(parent.clone());
+        cursor = by_bdf[parent.as_str()].parent_bdf.clone();
+    }
+    chain.reverse();
+    chain
+}
+
+/// 两端点上行链的最近公共上游（根→叶 最长公共前缀的末尾）。
+fn lowest_common_upstream(
+    by_bdf: &BTreeMap<&str, &PciDeviceSnapshot>,
+    a_bdf: &str,
+    b_bdf: &str,
+) -> Option<String> {
+    let chain_a = upstream_chain(by_bdf.get(a_bdf)?, by_bdf);
+    let chain_b = upstream_chain(by_bdf.get(b_bdf)?, by_bdf);
+    chain_a
+        .iter()
+        .zip(chain_b.iter())
+        .take_while(|(a, b)| a == b)
+        .last()
+        .map(|(a, _)| a.clone())
+}
+
+/// 把每条 P2P 链路两端 GPU 的 PCIe 上行汇聚点写入 `upstream_meeting_bdf`。
+/// GPU 的 pci_address 与设备清单对不上时保持 None，不伪造。
+pub fn enrich_p2p_upstream(
+    gpus: &[crate::domain::GpuSnapshot],
+    devices: &[PciDeviceSnapshot],
+    p2p: &mut crate::domain::P2pSnapshot,
+) {
+    if p2p.links.is_empty() {
+        return;
+    }
+    let by_bdf: BTreeMap<&str, &PciDeviceSnapshot> = devices
+        .iter()
+        .map(|device| (device.bdf.as_str(), device))
+        .collect();
+    let gpu_bdf = |index: u32| {
+        gpus.iter()
+            .find(|gpu| gpu.index == index)
+            .and_then(|gpu| gpu.pci_address.as_deref())
+            .map(|address| {
+                crate::collectors::gpu::normalize_pci_address(address).to_ascii_lowercase()
+            })
+    };
+    for link in &mut p2p.links {
+        if let (Some(a), Some(b)) = (gpu_bdf(link.source_gpu), gpu_bdf(link.target_gpu)) {
+            link.upstream_meeting_bdf = lowest_common_upstream(&by_bdf, &a, &b);
+        }
+    }
+}
+
+fn device_label(device: &PciDeviceSnapshot) -> String {
+    let name = device
+        .device_name
+        .as_deref()
+        .or(device.vendor_name.as_deref())
+        .unwrap_or("加速器");
+    shorten_str(name, 24)
+}
+
+fn shorten_str(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        value.to_owned()
+    } else {
+        let mut result: String = value.chars().take(max_chars.saturating_sub(1)).collect();
+        result.push('\u{2026}');
+        result
+    }
+}
+
+fn render_topo_node(
+    lines: &mut Vec<String>,
+    nodes: &[TopoNode],
+    by_bdf: &BTreeMap<&str, &PciDeviceSnapshot>,
+    idx: usize,
+    prefix: &str,
+    last: bool,
+    is_root: bool,
+) {
+    let bdf = nodes[idx].bdf.clone();
+    let label = match by_bdf.get(bdf.as_str()) {
+        Some(device) => {
+            let mut label = device.bdf.clone();
+            if let Some(name) = device
+                .device_name
+                .as_deref()
+                .or(device.vendor_name.as_deref())
+            {
+                label.push_str(&format!(" {}", shorten_str(name, 24)));
+            }
+            label
+        }
+        None => bdf,
+    };
+    let connector = if is_root {
+        ""
+    } else if last {
+        "└─ "
+    } else {
+        "├─ "
+    };
+    let endpoint = nodes[idx]
+        .endpoint
+        .as_ref()
+        .map_or(String::new(), |label| format!(" ← {label}"));
+    lines.push(format!("{prefix}{connector}{label}{endpoint}"));
+    let child_prefix = if is_root {
+        String::new()
+    } else if last {
+        format!("{prefix}   ")
+    } else {
+        format!("{prefix}│  ")
+    };
+    let child_count = nodes[idx].children.len();
+    for (position, child) in nodes[idx].children.iter().enumerate() {
+        render_topo_node(
+            lines,
+            nodes,
+            by_bdf,
+            *child,
+            &child_prefix,
+            position + 1 == child_count,
+            false,
+        );
+    }
 }
 
 #[derive(Debug, Default)]
@@ -843,12 +1088,12 @@ mod tests {
 
     use super::super::command::{CommandOutput, CommandRequest, CommandRunner};
     use super::{
-        class_role, is_valid_bdf, parse_link_width, parse_lspci_acs, parse_lspci_details,
-        parse_resource_windows, pcie_generation, scan_sysfs_devices, theoretical_bandwidth_mb_s,
-        LinuxPcieCollector,
+        accelerator_topology_lines, class_role, enrich_p2p_upstream, is_valid_bdf,
+        parse_link_width, parse_lspci_acs, parse_lspci_details, parse_resource_windows,
+        pcie_generation, scan_sysfs_devices, theoretical_bandwidth_mb_s, LinuxPcieCollector,
     };
     use crate::collectors::CollectorError;
-    use crate::domain::{PciDeviceRole, PciMmioKind};
+    use crate::domain::{GpuSnapshot, HealthStatus, PciDeviceRole, PciDeviceSnapshot, PciMmioKind};
 
     const LSPCI_ACS: &str = include_str!("fixtures/lspci_acs.txt");
     const LSPCI_NO_ACS: &str = include_str!("fixtures/lspci_no_acs.txt");
@@ -1218,5 +1463,179 @@ mod tests {
             std::env::temp_dir().join(format!("suanctl-{label}-{}-{suffix}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         root
+    }
+
+    fn topo_device(bdf: &str, parent: Option<&str>, class: &str) -> PciDeviceSnapshot {
+        PciDeviceSnapshot {
+            bdf: bdf.to_owned(),
+            vendor: None,
+            device: None,
+            class: Some(class.to_owned()),
+            driver: None,
+            numa_node: None,
+            iommu_group: None,
+            current_link_speed: None,
+            current_link_width: None,
+            current_link_gen: None,
+            current_theoretical_bandwidth_mb_s: None,
+            max_link_speed: None,
+            max_link_width: None,
+            max_link_gen: None,
+            max_theoretical_bandwidth_mb_s: None,
+            acs: None,
+            role: None,
+            class_name: None,
+            vendor_name: None,
+            device_name: None,
+            subsystem_vendor: None,
+            subsystem_device: None,
+            subsystem_name: None,
+            parent_bdf: parent.map(str::to_owned),
+            downstream_bdfs: Vec::new(),
+            mmio_windows: Vec::new(),
+            status: HealthStatus::Healthy,
+        }
+    }
+
+    fn topo_gpu(index: u32, bdf: &str, name: &str) -> GpuSnapshot {
+        GpuSnapshot {
+            index,
+            name: name.to_owned(),
+            uuid: None,
+            pci_address: Some(bdf.to_owned()),
+            status: HealthStatus::Healthy,
+            temperature_celsius: None,
+            utilization_percent: None,
+            memory_used_mib: None,
+            memory_total_mib: None,
+            power_draw_watts: None,
+            power_limit_watts: None,
+            pstate: None,
+            numa_node: None,
+            reset_required: None,
+            xid_codes: None,
+            smi_tool: None,
+            vendor: None,
+        }
+    }
+
+    #[test]
+    fn accelerator_topology_merges_shared_branches() {
+        // 模拟真机 172.18.4.199 的形态：两个 GCU 经各自下游口汇聚到同一 switch 链。
+        let devices = vec![
+            topo_device("0000:00:03.1", None, "0x060400"),
+            topo_device("0000:05:00.0", Some("0000:00:03.1"), "0x060400"),
+            topo_device("0000:06:00.0", Some("0000:05:00.0"), "0x060400"),
+            topo_device("0000:0b:00.0", Some("0000:06:00.0"), "0x060400"),
+            topo_device("0000:0c:00.0", Some("0000:0b:00.0"), "0x060400"),
+            topo_device("0000:0c:10.0", Some("0000:0b:00.0"), "0x060400"),
+            topo_device("0000:0d:00.0", Some("0000:0c:00.0"), "0x120000"),
+            topo_device("0000:0f:00.0", Some("0000:0c:10.0"), "0x120000"),
+            // 非加速器端点不参与树。
+            topo_device("0000:eb:00.0", None, "0x020000"),
+            topo_device("0000:d7:00.0", None, "0x010802"),
+        ];
+        let gpus = vec![
+            topo_gpu(0, "0000:0d:00.0", "Enflame S60"),
+            topo_gpu(1, "0000:0f:00.0", "Enflame S60"),
+        ];
+        let lines = accelerator_topology_lines(&devices, &gpus, 64);
+        assert_eq!(
+            lines,
+            vec![
+                "0000:00:03.1",
+                "└─ 0000:05:00.0",
+                "   └─ 0000:06:00.0",
+                "      └─ 0000:0b:00.0",
+                "         ├─ 0000:0c:00.0",
+                "         │  └─ 0000:0d:00.0 ← GPU0 Enflame S60",
+                "         └─ 0000:0c:10.0",
+                "            └─ 0000:0f:00.0 ← GPU1 Enflame S60",
+            ]
+        );
+    }
+
+    #[test]
+    fn accelerator_topology_handles_missing_parents_and_empty_input() {
+        // 父链断裂（上游不在设备清单中）：端点自成根节点。
+        let devices = vec![topo_device(
+            "0000:0d:00.0",
+            Some("0000:0c:00.0"),
+            "0x120000",
+        )];
+        let lines = accelerator_topology_lines(&devices, &[], 64);
+        assert_eq!(lines, vec!["0000:0d:00.0 ← 加速器"]);
+
+        // 无加速器 → 空。
+        let devices = vec![topo_device("0000:eb:00.0", None, "0x020000")];
+        assert!(accelerator_topology_lines(&devices, &[], 64).is_empty());
+        assert!(accelerator_topology_lines(&[], &[], 64).is_empty());
+    }
+
+    #[test]
+    fn accelerator_topology_respects_line_cap() {
+        let devices = vec![
+            topo_device("0000:0d:00.0", Some("0000:0c:00.0"), "0x120000"),
+            topo_device("0000:0c:00.0", None, "0x060400"),
+            topo_device("0000:0f:00.0", Some("0000:0c:00.0"), "0x030200"),
+        ];
+        let lines = accelerator_topology_lines(&devices, &[], 2);
+        assert_eq!(lines.len(), 3);
+        assert!(lines[2].contains("已截断"));
+    }
+
+    #[test]
+    fn enrich_p2p_upstream_finds_lowest_common_upstream() {
+        // 与真机 172.18.4.199 同形态：GPU0/GPU1 汇聚在 0b:00.0，GPU2 在另一分支。
+        let devices = vec![
+            topo_device("0000:00:03.1", None, "0x060400"),
+            topo_device("0000:05:00.0", Some("0000:00:03.1"), "0x060400"),
+            topo_device("0000:06:00.0", Some("0000:05:00.0"), "0x060400"),
+            topo_device("0000:0b:00.0", Some("0000:06:00.0"), "0x060400"),
+            topo_device("0000:0c:00.0", Some("0000:0b:00.0"), "0x060400"),
+            topo_device("0000:0c:10.0", Some("0000:0b:00.0"), "0x060400"),
+            topo_device("0000:0d:00.0", Some("0000:0c:00.0"), "0x120000"),
+            topo_device("0000:0f:00.0", Some("0000:0c:10.0"), "0x120000"),
+            topo_device("0000:40:00.0", Some("0000:05:00.0"), "0x120000"),
+        ];
+        let gpus = vec![
+            topo_gpu(0, "0000:0d:00.0", "Enflame S60"),
+            topo_gpu(1, "0000:0f:00.0", "Enflame S60"),
+            topo_gpu(2, "0000:40:00.0", "Enflame S60"),
+        ];
+        let mut p2p = crate::domain::P2pSnapshot {
+            gpu_indices: vec![0, 1, 2],
+            links: vec![
+                p2p_link(0, 1),
+                p2p_link(0, 2),
+                p2p_link(2, 9), // 目标 GPU 不在清单：保持未知
+            ],
+            benchmark: Default::default(),
+            status: HealthStatus::Healthy,
+        };
+        enrich_p2p_upstream(&gpus, &devices, &mut p2p);
+        assert_eq!(
+            p2p.links[0].upstream_meeting_bdf.as_deref(),
+            Some("0000:0b:00.0")
+        );
+        assert_eq!(
+            p2p.links[1].upstream_meeting_bdf.as_deref(),
+            Some("0000:05:00.0")
+        );
+        assert_eq!(p2p.links[2].upstream_meeting_bdf, None);
+    }
+
+    fn p2p_link(source_gpu: u32, target_gpu: u32) -> crate::domain::GpuP2pLinkSnapshot {
+        crate::domain::GpuP2pLinkSnapshot {
+            source_gpu,
+            target_gpu,
+            topology_path: Some("PIX".to_owned()),
+            upstream_meeting_bdf: None,
+            read: crate::domain::P2pCapabilityStatus::Unknown,
+            write: crate::domain::P2pCapabilityStatus::Unknown,
+            pcie: crate::domain::P2pCapabilityStatus::Unknown,
+            nvlink: crate::domain::P2pCapabilityStatus::Unknown,
+            atomics: crate::domain::P2pCapabilityStatus::Unknown,
+        }
     }
 }

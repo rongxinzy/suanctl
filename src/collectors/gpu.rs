@@ -241,6 +241,7 @@ fn parse_gpu(
         // Xid 属于 journal/kernel 证据，按任务边界本采集器不读取。
         xid_codes: None,
         smi_tool: None,
+        vendor: Some("NVIDIA".to_owned()),
     })
 }
 
@@ -312,7 +313,7 @@ fn is_reset_marker(value: &str) -> bool {
     value.trim().eq_ignore_ascii_case("gpu requires reset")
 }
 
-fn read_numa_node(sysfs_root: &Path, pci_address: &str) -> Option<u32> {
+pub(crate) fn read_numa_node(sysfs_root: &Path, pci_address: &str) -> Option<u32> {
     let candidates = [pci_address.to_owned(), normalize_pci_address(pci_address)];
     candidates.iter().find_map(|address| {
         let path = sysfs_root
@@ -325,7 +326,7 @@ fn read_numa_node(sysfs_root: &Path, pci_address: &str) -> Option<u32> {
     })
 }
 
-fn normalize_pci_address(value: &str) -> String {
+pub(crate) fn normalize_pci_address(value: &str) -> String {
     let mut pieces = value.splitn(3, ':');
     let Some(domain) = pieces.next() else {
         return value.to_owned();

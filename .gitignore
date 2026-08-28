@@ -1,4 +1,6 @@
 /target/
 /dist/
 /reports/
+/dist/
+/cuda-samples-13.2.tar.gz
 .DS_Store

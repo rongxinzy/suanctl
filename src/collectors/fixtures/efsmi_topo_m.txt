@@ -1,0 +1,28 @@
+-------------------------------------------------------------------------------
+--------------------- Enflame System Management Interface ---------------------
+--------- Enflame Tech, All Rights Reserved. 2024-2025 Copyright (C) ----------
+-------------------------------------------------------------------------------
+                                                                               
+        GCU0    GCU1    GCU2    GCU3    GCU4    GCU5    GCU6    GCU7    GCU8    GCU9     CPU Affinity    NUMA Affinity
+GCU0     X      PXB     PXB     PXB     PXB     PXB     PXB     PXB     PXB     PXB      0-7,32-39       0           
+GCU1    PXB      X      PXB     PXB     PXB     PXB     PXB     PXB     PXB     PXB      0-7,32-39       0           
+GCU2    PXB     PXB      X      PXB     PXB     PXB     PXB     PXB     PXB     PXB      0-7,32-39       0           
+GCU3    PXB     PXB     PXB      X      PXB     PXB     PXB     PXB     PXB     PXB      0-7,32-39       0           
+GCU4    PXB     PXB     PXB     PXB      X      PXB     PXB     PXB     PXB     PXB      0-7,32-39       0           
+GCU5    PXB     PXB     PXB     PXB     PXB      X      PXB     PXB     PXB     PXB      0-7,32-39       0           
+GCU6    PXB     PXB     PXB     PXB     PXB     PXB      X      PXB     PXB     PXB      0-7,32-39       0           
+GCU7    PXB     PXB     PXB     PXB     PXB     PXB     PXB      X      PXB     PXB      0-7,32-39       0           
+GCU8    PXB     PXB     PXB     PXB     PXB     PXB     PXB     PXB      X      PXB      0-7,32-39       0           
+GCU9    PXB     PXB     PXB     PXB     PXB     PXB     PXB     PXB     PXB      X       0-7,32-39       0           
+
+Legend:
+
+    X    = Self
+    SYS  = Connection traversing PCIe as well as the SMP interconnect between NUMA nodes (e.g., QPI/UPI)
+    NODE = Connection traversing PCIe as well as the interconnect between PCIe Host Bridges within a NUMA node
+    PHB  = Connection traversing PCIe as well as a PCIe Host Bridge (typically the CPU)
+    PXB  = Connection traversing multiple PCIe bridges (without traversing the PCIe Host Bridge)
+    PIX  = Connection traversing at most a single PCIe bridge
+    ESL# = Connection traversing a bonded set of # Enflame Smart Links
+    IDB  = Connection traversing internal die bus
+

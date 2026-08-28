@@ -38,6 +38,7 @@ pub trait DiagnosisEngine {
 pub fn diagnose(snapshot: &DashboardSnapshot) -> Vec<DiagnosisFinding> {
     let mut findings = Vec::new();
     diagnose_gpus(snapshot, &mut findings);
+    diagnose_p2p_topology(snapshot, &mut findings);
     diagnose_services(snapshot, &mut findings);
     diagnose_platform(snapshot, &mut findings);
     diagnose_storage(snapshot, &mut findings);
@@ -96,6 +97,56 @@ fn diagnose_gpus(snapshot: &DashboardSnapshot, findings: &mut Vec<DiagnosisFindi
             )),
             _ => {}
         }
+    }
+}
+
+fn diagnose_p2p_topology(snapshot: &DashboardSnapshot, findings: &mut Vec<DiagnosisFinding>) {
+    let Some(p2p) = snapshot
+        .platform
+        .as_ref()
+        .and_then(|platform| platform.p2p.as_ref())
+    else {
+        return;
+    };
+    let numa_of = |index: u32| {
+        snapshot
+            .gpus
+            .iter()
+            .find(|gpu| gpu.index == index)
+            .and_then(|gpu| gpu.numa_node)
+    };
+    for link in &p2p.links {
+        // 链路是有向全展开的，只看 source<target 避免成对重复。
+        if link.source_gpu >= link.target_gpu {
+            continue;
+        }
+        let Some((a, b)) = numa_of(link.source_gpu).zip(numa_of(link.target_gpu)) else {
+            continue;
+        };
+        if a == b {
+            continue;
+        }
+        // 只在 P2P 确有路径/能力时报告：两卡本无通路时跨 NUMA 无意义。
+        let has_path =
+            link.topology_path.is_some() || link.read.is_supported() || link.write.is_supported();
+        if !has_path {
+            continue;
+        }
+        findings.push(finding(
+            "gpu-p2p-cross-numa",
+            &format!("gpu-{}-{}", link.source_gpu, link.target_gpu),
+            HealthStatus::Warning,
+            "GPU P2P 路径跨 NUMA 节点",
+            [format!(
+                "GPU{}(NUMA{}) -> GPU{}(NUMA{}) path={} meeting={}",
+                link.source_gpu,
+                a,
+                link.target_gpu,
+                b,
+                link.topology_path.as_deref().unwrap_or("未知"),
+                link.upstream_meeting_bdf.as_deref().unwrap_or("未知")
+            )],
+        ));
     }
 }
 
@@ -655,6 +706,7 @@ mod tests {
             reset_required: reset,
             xid_codes: Some(xid.to_vec()),
             smi_tool: None,
+            vendor: None,
         }
     }
 
@@ -1046,6 +1098,7 @@ mod tests {
             reset_required: None,
             xid_codes: Some(Vec::new()),
             smi_tool: None,
+            vendor: Some("NVIDIA".to_owned()),
         };
         snapshot.gpus = vec![l20(0, 56, 87.95), l20(1, 57, 89.53)];
         snapshot.logs = Some(crate::domain::LogSnapshot {

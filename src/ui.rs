@@ -118,7 +118,16 @@ fn draw_page(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
         UiPage::Overview => draw_overview(frame, state, area),
         UiPage::Gpu => {
             let (header, widths, rows) = gpu_table(state, area.width);
-            draw_table(frame, " GPU ", &header, &widths, rows, scroll, area);
+            let title = match state
+                .snapshot
+                .gpus
+                .first()
+                .and_then(|gpu| gpu.smi_tool.as_deref())
+            {
+                Some(tool) => format!(" GPU ({tool}) "),
+                None => " GPU ".to_owned(),
+            };
+            draw_table(frame, &title, &header, &widths, rows, scroll, area);
         }
         UiPage::Services => {
             let (header, widths, rows) = service_table(state, area.width);
@@ -265,7 +274,16 @@ fn gpu_table(
                     Cell::from(opt_ref(&gpu.pstate)),
                     Cell::from(gpu.status.label()),
                 ];
-                let remark = format!("{reset}/{xid}");
+                // reset/Xid 是 NVIDIA 语义；其他厂商显示采集工具来源，不误导。
+                let remark = if gpu
+                    .vendor
+                    .as_deref()
+                    .is_none_or(|vendor| vendor == "NVIDIA")
+                {
+                    format!("{reset}/{xid}")
+                } else {
+                    gpu.smi_tool.clone().unwrap_or_else(|| "—".into())
+                };
                 cells.push(Cell::from(remark));
                 Row::new(cells)
             })
@@ -568,6 +586,17 @@ fn overview_platform_lines(state: &AppState) -> Vec<Line<'static>> {
                 "PCIe ACS：支持 {} · 开启 {} · 全部关闭 {}",
                 summary.supported, summary.enabled, summary.disabled
             )));
+        }
+        let topology = crate::collectors::pcie::accelerator_topology_lines(
+            &platform.pci_devices,
+            &state.snapshot.gpus,
+            32,
+        );
+        if !topology.is_empty() {
+            lines.push(Line::from("PCIe 拓扑（加速器子树）："));
+            for line in topology {
+                lines.push(Line::from(line));
+            }
         }
         if let Some(p2p) = &platform.p2p {
             let supported = p2p

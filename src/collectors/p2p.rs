@@ -1,7 +1,8 @@
-//! NVIDIA GPU P2P 拓扑、能力矩阵和显式 NVBandwidth 实测。
+//! GPU P2P 拓扑、能力矩阵和显式带宽实测。
 //!
-//! 默认路径只运行 `nvidia-smi topo` 只读查询。`nvbandwidth` 会产生 GPU
-//! 负载，只能由 CLI 的显式 benchmark 入口调用。
+//! 默认路径只运行只读拓扑查询（`nvidia-smi topo`；无 NVIDIA 设备时回退
+//! `efsmi --topo -m`）。带宽实测会产生 GPU 负载，只能由 CLI 的显式
+//! benchmark 入口调用（仅 NVIDIA 路径支持）。
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -174,6 +175,7 @@ impl<R: CommandRunner> NvidiaP2pCollector<R> {
                         .get(&(*source_gpu, *target_gpu))
                         .cloned()
                         .filter(|value| value != "X"),
+                    upstream_meeting_bdf: None,
                     read: capability_at(matrices.get("read"), *source_gpu, *target_gpu),
                     write: capability_at(matrices.get("write"), *source_gpu, *target_gpu),
                     pcie: capability_at(matrices.get("pcie"), *source_gpu, *target_gpu),
@@ -384,7 +386,7 @@ impl<R: CommandRunner> NvidiaP2pCollector<R> {
                 ),
             ));
         }
-        parse_gpu_matrix(&output.stdout).map_err(|error| {
+        parse_gpu_matrix(&output.stdout, "GPU").map_err(|error| {
             p2p_issue(
                 "nvidia_smi_topo_parse_failed",
                 HealthStatus::Unknown,
@@ -400,7 +402,218 @@ struct ParsedGpuMatrix {
     values: BTreeMap<(u32, u32), String>,
 }
 
-fn parse_gpu_matrix(output: &str) -> Result<ParsedGpuMatrix, CollectorError> {
+/// Enflame GCU 拓扑采集：`efsmi --topo -m` 仅提供路径矩阵（X/PXB/PHB/…），
+/// 没有 NVIDIA 那样的 r/w/p/n/a 能力子矩阵，能力字段保持 Unknown。
+#[derive(Debug, Clone)]
+pub struct EnflameP2pCollector<R = ProcessCommandRunner> {
+    runner: R,
+    timeout: Duration,
+    stdout_limit: usize,
+    stderr_limit: usize,
+}
+
+impl EnflameP2pCollector<ProcessCommandRunner> {
+    pub fn new() -> Self {
+        Self::with_runner(ProcessCommandRunner)
+    }
+}
+
+impl Default for EnflameP2pCollector<ProcessCommandRunner> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<R> EnflameP2pCollector<R> {
+    pub fn with_runner(runner: R) -> Self {
+        Self {
+            runner,
+            timeout: DEFAULT_P2P_TIMEOUT,
+            stdout_limit: DEFAULT_STDOUT_LIMIT,
+            stderr_limit: DEFAULT_STDERR_LIMIT,
+        }
+    }
+
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    pub fn with_output_limits(mut self, stdout_limit: usize, stderr_limit: usize) -> Self {
+        self.stdout_limit = stdout_limit;
+        self.stderr_limit = stderr_limit;
+        self
+    }
+}
+
+impl<R: CommandRunner> EnflameP2pCollector<R> {
+    pub fn collect_topology(&self) -> P2pCollection {
+        let mut request = CommandRequest::new("efsmi", ["--topo", "-m"]);
+        request.timeout = self.timeout;
+        request.stdout_limit = self.stdout_limit;
+        request.stderr_limit = self.stderr_limit;
+        let matrix = match self.runner.run(&request) {
+            Err(error) => Err(p2p_issue(
+                "efsmi_unavailable",
+                HealthStatus::Unavailable,
+                format!("GCU 拓扑采集不可用：{}", error.message),
+            )),
+            Ok(output) if output.timed_out => Err(p2p_issue(
+                "efsmi_topo_timeout",
+                HealthStatus::Unknown,
+                "efsmi 拓扑查询超时".to_owned(),
+            )),
+            Ok(output) if output.stdout_truncated || output.stderr_truncated => Err(p2p_issue(
+                "efsmi_topo_output_too_large",
+                HealthStatus::Unknown,
+                "efsmi 拓扑输出超过安全上限".to_owned(),
+            )),
+            Ok(output) if !output.success => Err(p2p_issue(
+                "efsmi_topo_failed",
+                HealthStatus::Unknown,
+                format!("efsmi 拓扑查询失败：{}", output.stderr.trim()),
+            )),
+            Ok(output) => parse_gpu_matrix(&output.stdout, "GCU").map_err(|error| {
+                p2p_issue(
+                    "efsmi_topo_parse_failed",
+                    HealthStatus::Unknown,
+                    format!("GCU 拓扑矩阵解析失败：{}", error.message),
+                )
+            }),
+        };
+        let matrix = match matrix {
+            Ok(matrix) => matrix,
+            Err(issue) => {
+                return P2pCollection {
+                    snapshot: P2pSnapshot {
+                        gpu_indices: Vec::new(),
+                        links: Vec::new(),
+                        benchmark: P2pBenchmarkSnapshot::default(),
+                        status: issue.status,
+                    },
+                    issues: vec![issue],
+                };
+            }
+        };
+
+        let mut links = Vec::new();
+        for source_gpu in &matrix.gpu_indices {
+            for target_gpu in &matrix.gpu_indices {
+                if source_gpu == target_gpu {
+                    continue;
+                }
+                links.push(GpuP2pLinkSnapshot {
+                    source_gpu: *source_gpu,
+                    target_gpu: *target_gpu,
+                    topology_path: matrix
+                        .values
+                        .get(&(*source_gpu, *target_gpu))
+                        .cloned()
+                        .filter(|value| value != "X"),
+                    upstream_meeting_bdf: None,
+                    read: P2pCapabilityStatus::Unknown,
+                    write: P2pCapabilityStatus::Unknown,
+                    pcie: P2pCapabilityStatus::Unknown,
+                    nvlink: P2pCapabilityStatus::Unknown,
+                    atomics: P2pCapabilityStatus::Unknown,
+                });
+            }
+        }
+        let status = if matrix.gpu_indices.is_empty() {
+            HealthStatus::Unknown
+        } else {
+            HealthStatus::Healthy
+        };
+        P2pCollection {
+            snapshot: P2pSnapshot {
+                gpu_indices: matrix.gpu_indices,
+                links,
+                benchmark: P2pBenchmarkSnapshot::default(),
+                status,
+            },
+            issues: Vec::new(),
+        }
+    }
+}
+
+/// P2P 拓扑回退链：NVIDIA（nvidia-smi topo 全家桶）无设备时尝试 Enflame
+///（efsmi --topo -m）。实测 benchmark 仅 NVIDIA 路径支持。
+#[derive(Debug, Clone)]
+pub struct ChainP2pCollector<R = ProcessCommandRunner> {
+    nvidia: NvidiaP2pCollector<R>,
+    enflame: EnflameP2pCollector<R>,
+}
+
+impl ChainP2pCollector<ProcessCommandRunner> {
+    pub fn new() -> Self {
+        Self::with_runner(ProcessCommandRunner)
+    }
+}
+
+impl Default for ChainP2pCollector<ProcessCommandRunner> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<R: Clone> ChainP2pCollector<R> {
+    pub fn with_runner(runner: R) -> Self {
+        Self {
+            nvidia: NvidiaP2pCollector::with_runner(runner.clone()),
+            enflame: EnflameP2pCollector::with_runner(runner),
+        }
+    }
+
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.nvidia = self.nvidia.with_timeout(timeout);
+        self.enflame = self.enflame.with_timeout(timeout);
+        self
+    }
+
+    pub fn with_output_limits(mut self, stdout_limit: usize, stderr_limit: usize) -> Self {
+        self.nvidia = self.nvidia.with_output_limits(stdout_limit, stderr_limit);
+        self.enflame = self.enflame.with_output_limits(stdout_limit, stderr_limit);
+        self
+    }
+}
+
+impl<R: CommandRunner + Clone> ChainP2pCollector<R> {
+    pub fn collect_topology(&self) -> P2pCollection {
+        let nvidia = self.nvidia.collect_topology();
+        if !nvidia.snapshot.gpu_indices.is_empty() {
+            return nvidia;
+        }
+        let enflame = self.enflame.collect_topology();
+        if enflame.snapshot.gpu_indices.is_empty() {
+            // 两条链都没有设备：保留 NVIDIA 侧的原始错误上报。
+            return nvidia;
+        }
+        enflame
+    }
+
+    pub fn collect_with_benchmark(&self) -> P2pCollection {
+        let nvidia = self.nvidia.collect_with_benchmark();
+        if !nvidia.snapshot.gpu_indices.is_empty() {
+            return nvidia;
+        }
+        let mut enflame = self.enflame.collect_topology();
+        if enflame.snapshot.gpu_indices.is_empty() {
+            return nvidia;
+        }
+        enflame.snapshot.benchmark = P2pBenchmarkSnapshot {
+            status: P2pBenchmarkStatus::Unavailable,
+            tool: "efsmi".to_owned(),
+            testcase: "-".to_owned(),
+            measured_at: None,
+            direction_description: None,
+            measurements: Vec::new(),
+            message: Some("Enflame GCU 暂无 P2P 带宽实测工具（efsmi 不提供等价能力）".to_owned()),
+        };
+        enflame
+    }
+}
+
+fn parse_gpu_matrix(output: &str, label_prefix: &str) -> Result<ParsedGpuMatrix, CollectorError> {
     if output
         .to_ascii_lowercase()
         .contains("no devices were found")
@@ -417,7 +630,7 @@ fn parse_gpu_matrix(output: &str) -> Result<ParsedGpuMatrix, CollectorError> {
         .find_map(|(index, line)| {
             let indices = line
                 .split_whitespace()
-                .filter_map(parse_gpu_label)
+                .filter_map(|token| parse_gpu_label(token, label_prefix))
                 .collect::<Vec<_>>();
             (!indices.is_empty()).then_some((index, indices))
         })
@@ -426,7 +639,10 @@ fn parse_gpu_matrix(output: &str) -> Result<ParsedGpuMatrix, CollectorError> {
     let mut values = BTreeMap::new();
     for line in lines.iter().skip(header_index + 1) {
         let tokens = line.split_whitespace().collect::<Vec<_>>();
-        let Some(row_gpu) = tokens.first().and_then(|token| parse_gpu_label(token)) else {
+        let Some(row_gpu) = tokens
+            .first()
+            .and_then(|token| parse_gpu_label(token, label_prefix))
+        else {
             continue;
         };
         if !gpu_indices.contains(&row_gpu) || tokens.len() < gpu_indices.len() + 1 {
@@ -449,8 +665,8 @@ fn parse_gpu_matrix(output: &str) -> Result<ParsedGpuMatrix, CollectorError> {
     })
 }
 
-fn parse_gpu_label(value: &str) -> Option<u32> {
-    value.strip_prefix("GPU")?.parse::<u32>().ok()
+fn parse_gpu_label(value: &str, label_prefix: &str) -> Option<u32> {
+    value.strip_prefix(label_prefix)?.parse::<u32>().ok()
 }
 
 fn capability_at(
@@ -771,5 +987,92 @@ mod tests {
             .issues
             .iter()
             .any(|issue| issue.code == "nvbandwidth_timeout"));
+    }
+
+    const EFSMI_TOPO: &str = include_str!("fixtures/efsmi_topo_m.txt");
+
+    #[test]
+    fn enflame_topology_parses_real_efsmi_fixture() {
+        let runner = FixtureRunner {
+            handler: Arc::new(|request| {
+                assert_eq!(request.program, "efsmi");
+                assert_eq!(request.args, ["--topo", "-m"]);
+                Ok(output(EFSMI_TOPO))
+            }),
+        };
+        let collection = EnflameP2pCollector::with_runner(runner).collect_topology();
+        assert!(collection.issues.is_empty(), "{:?}", collection.issues);
+        assert_eq!(collection.snapshot.gpu_indices, (0..10).collect::<Vec<_>>());
+        assert_eq!(collection.snapshot.links.len(), 90);
+        assert_eq!(collection.snapshot.status, HealthStatus::Healthy);
+        let link = collection
+            .snapshot
+            .links
+            .iter()
+            .find(|link| link.source_gpu == 0 && link.target_gpu == 9)
+            .expect("GCU0 -> GCU9");
+        assert_eq!(link.topology_path.as_deref(), Some("PXB"));
+        // efsmi 不提供能力子矩阵，能力字段保持未知而不伪造。
+        assert_eq!(link.read, P2pCapabilityStatus::Unknown);
+        assert_eq!(link.pcie, P2pCapabilityStatus::Unknown);
+    }
+
+    #[test]
+    fn chain_falls_back_to_efsmi_topology() {
+        let runner = FixtureRunner {
+            handler: Arc::new(|request| {
+                if request.program == "efsmi" {
+                    Ok(output(EFSMI_TOPO))
+                } else {
+                    Err(CollectorError::new(
+                        "command",
+                        "spawn_failed",
+                        format!("{} 不存在", request.program),
+                    ))
+                }
+            }),
+        };
+        let collection = ChainP2pCollector::with_runner(runner).collect_topology();
+        assert_eq!(collection.snapshot.gpu_indices.len(), 10);
+        assert_eq!(collection.snapshot.status, HealthStatus::Healthy);
+    }
+
+    #[test]
+    fn chain_keeps_nvidia_error_when_both_vendors_absent() {
+        let runner = FixtureRunner {
+            handler: Arc::new(|_| {
+                Err(CollectorError::new(
+                    "command",
+                    "spawn_failed",
+                    "工具不存在".to_owned(),
+                ))
+            }),
+        };
+        let collection = ChainP2pCollector::with_runner(runner).collect_topology();
+        assert_eq!(collection.snapshot.status, HealthStatus::Unavailable);
+        assert_eq!(collection.issues.len(), 1);
+        assert_eq!(collection.issues[0].code, "nvidia_smi_unavailable");
+    }
+
+    #[test]
+    fn chain_marks_enflame_benchmark_unavailable() {
+        let runner = FixtureRunner {
+            handler: Arc::new(|request| {
+                if request.program == "efsmi" {
+                    Ok(output(EFSMI_TOPO))
+                } else {
+                    Err(CollectorError::new(
+                        "command",
+                        "spawn_failed",
+                        format!("{} 不存在", request.program),
+                    ))
+                }
+            }),
+        };
+        let collection = ChainP2pCollector::with_runner(runner).collect_with_benchmark();
+        assert_eq!(collection.snapshot.gpu_indices.len(), 10);
+        let benchmark = &collection.snapshot.benchmark;
+        assert_eq!(benchmark.status, P2pBenchmarkStatus::Unavailable);
+        assert!(benchmark.measurements.is_empty());
     }
 }

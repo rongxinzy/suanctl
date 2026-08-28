@@ -82,9 +82,16 @@ pub fn ensure_deployed(alias: &str, local_binary: &Path, force: bool) -> DeployO
                     remote_version: verified,
                 }
             } else {
+                // None 说明二进制在远端根本无法执行（常见于本机 glibc 新于远端）。
+                let hint = if verified.is_none() {
+                    "；远端可能无法运行该二进制（如 glibc 版本过旧），\
+                     请改用 musl 静态构建（make dist-musl）的 suanctl 执行 agent"
+                } else {
+                    ""
+                };
                 DeployOutcome {
                     state: DeployState::Failed(format!(
-                        "上传后校验失败：远程版本 {verified:?} != 本地 {local_version}"
+                        "上传后校验失败：远程版本 {verified:?} != 本地 {local_version}{hint}"
                     )),
                     remote_path,
                     local_version,
@@ -196,8 +203,9 @@ fn upload_rsync(alias: &str, local_binary: &Path, remote_path: &str) -> Result<(
     let ssh_opts = "ssh -o BatchMode=yes -o ConnectTimeout=5 \
                     -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
                     -o StrictHostKeyChecking=accept-new";
-    // --info=progress2：rsync 总进度（百分比/速率/剩余，单行 \r 刷新，输出到 stderr，
-    // 不污染 stdout 管道）；--partial/--inplace 断点续传。
+    // --info=progress2：rsync 总进度（百分比/速率/剩余，单行 \r 刷新）。
+    // 注意：rsync 的进度写到 stdout，会污染 agent 子命令的 JSON 管道；
+    // 这里把子进程 stdout 重定向到本进程 stderr，进度照常可见而管道保持干净。
     let size_mib = std::fs::metadata(local_binary)
         .map(|meta| meta.len() as f64 / 1048576.0)
         .unwrap_or(0.0);
@@ -214,6 +222,7 @@ fn upload_rsync(alias: &str, local_binary: &Path, remote_path: &str) -> Result<(
         ])
         .arg(local_binary)
         .arg(format!("{alias}:{remote_path}"))
+        .stdout(Stdio::from(std::io::stderr()))
         .status()
         .map_err(|error| format!("rsync 不可用（{error}），回退 ssh 管道"))?;
     if status.success() {

@@ -15,12 +15,12 @@
 | 域 | 能力 | 入口 | 说明 |
 |---|---|---|---|
 | 主机 | hostname/OS/内核/CPU/内存/负载 | doctor/report/TUI 总览 | LinuxHostCollector |
-| GPU | 温度/利用率/显存/功耗/P态/Xid/复位 | doctor/report/TUI GPU 页 | NvidiaSmiCollector |
-| PCIe | 链路代际/宽度/带宽上限/ACS/IOMMU | 总览摘要 + 诊断 | LinuxPcieCollector |
+| GPU | 温度/利用率/显存/功耗/P态/Xid/复位（NVIDIA）；efsmi 温度/利用率/显存/功耗/Dpm/健康（Enflame GCU） | doctor/report/TUI GPU 页 | NvidiaSmiCollector / EnflameSmiCollector（回退链） |
+| PCIe | 链路代际/宽度/带宽上限/ACS/IOMMU + 加速器上行拓扑树（父链合并，端点标注 NUMA） | 总览摘要 + 诊断 + 报告 | LinuxPcieCollector |
 | 驱动/CUDA | 模块/版本匹配/toolkit/库存在性 | 总览摘要 + 诊断 | platform.rs |
 | 存储 | RAID/HBA/SAS PHY/mdraid/storcli | 诊断 | storage.rs |
 | 服务发现 | llama.cpp/vLLM/SGLang 进程/容器/显式端点 + HTTP 探针 | TUI 服务页 | engines/ |
-| P2P | 驱动能力矩阵 + NVBandwidth 实测（显式触发） | GPU 页 + p2p CLI | p2p.rs |
+| P2P | 驱动能力矩阵 + NVBandwidth 实测（显式触发）；Enflame GCU 拓扑路径（efsmi --topo -m）；链路级上行汇聚点（PCIe 树 LCA）+ 跨 NUMA 诊断 | GPU 页 + p2p CLI | p2p.rs |
 | 日志 | dmesg/journalctl/syslog 尾部 + 异常模式检测（Xid/NVRM/AER/ECC） | TUI 日志页 + logs CLI | logs.rs（已炼化） |
 | 诊断 | 确定性规则引擎 → DiagnosisFinding | 诊断页 | diagnosis.rs |
 | 报告 | JSON / JSONL / Markdown 证据报告 | report CLI / TUI e | storage.rs |

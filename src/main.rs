@@ -11,9 +11,12 @@ use suanctl::{
     app::{AppState, UiReportFormat},
     collectors::{
         demo,
+        gcu::ChainGpuCollector,
         logs::{LinuxLogCollector, LogsCollector},
-        p2p::{NvidiaP2pCollector, P2pCollection},
+        p2p::{ChainP2pCollector, NvidiaP2pCollector, P2pCollection},
+        pcie::{enrich_p2p_upstream, LinuxPcieCollector},
         runtime::{runtime_status, RuntimeCollection, RuntimeCollector},
+        GpuCollector,
     },
     config::SuanctlConfig,
     domain::{DoctorReport, HealthStatus, LogSnapshot, P2pBenchmarkSnapshot, P2pSnapshot},
@@ -350,12 +353,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
             );
         }
         Command::P2p { benchmark, json } => {
-            let collector = NvidiaP2pCollector::new();
-            let collection = if benchmark {
+            let collector = ChainP2pCollector::new();
+            let mut collection = if benchmark {
                 collector.collect_with_benchmark()
             } else {
                 collector.collect_topology()
             };
+            // 用 GPU 清单 × PCIe 树补齐每条链路的上行汇聚点；任一采集失败时保持"未知"。
+            if let Ok(gpus) = ChainGpuCollector::new().collect_gpus() {
+                let pcie = LinuxPcieCollector::new().collect_snapshot();
+                enrich_p2p_upstream(&gpus, &pcie.devices, &mut collection.snapshot);
+            }
             if json {
                 println!("{}", serde_json::to_string_pretty(&collection)?);
             } else {
@@ -647,7 +655,7 @@ fn print_p2p(collection: &P2pCollection) {
     println!("GPU：{:?}", collection.snapshot.gpu_indices);
     for link in &collection.snapshot.links {
         println!(
-            "GPU{} -> GPU{}  路径={}  读={} 写={} PCIe={} NVLink={} 原子={}",
+            "GPU{} -> GPU{}  路径={}  读={} 写={} PCIe={} NVLink={} 原子={} 汇聚={}",
             link.source_gpu,
             link.target_gpu,
             link.topology_path.as_deref().unwrap_or("未知"),
@@ -655,7 +663,8 @@ fn print_p2p(collection: &P2pCollection) {
             link.write.label(),
             link.pcie.label(),
             link.nvlink.label(),
-            link.atomics.label()
+            link.atomics.label(),
+            link.upstream_meeting_bdf.as_deref().unwrap_or("未知")
         );
     }
     let benchmark = &collection.snapshot.benchmark;

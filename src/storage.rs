@@ -332,7 +332,7 @@ fn render_markdown(report: &EvidenceReport) -> String {
         out.push_str("| - | 未发现服务或发现能力不可用 | 未知 | 未知 | 未知 | 未知 |\n");
     }
     if let Some(platform) = &s.platform {
-        render_platform(&mut out, platform);
+        render_platform(&mut out, platform, &s.gpus);
     } else {
         out.push_str("\n## 平台\n\n平台采集结果：未知。\n");
     }
@@ -375,7 +375,11 @@ fn render_markdown(report: &EvidenceReport) -> String {
     }
     out
 }
-fn render_platform(out: &mut String, p: &crate::domain::PlatformSnapshot) {
+fn render_platform(
+    out: &mut String,
+    p: &crate::domain::PlatformSnapshot,
+    gpus: &[crate::domain::GpuSnapshot],
+) {
     out.push_str("\n## 平台\n\n| 项目 | 值 | 状态 |\n| --- | --- | --- |\n");
     out.push_str(&row(
         "IOMMU 生效",
@@ -491,6 +495,17 @@ fn render_platform(out: &mut String, p: &crate::domain::PlatformSnapshot) {
             "\n> PCIe 列表已截断，仅展示 32/{} 项。\n",
             p.pci_devices.len()
         ));
+    }
+    let topology = crate::collectors::pcie::accelerator_topology_lines(&p.pci_devices, gpus, 128);
+    if !topology.is_empty() {
+        out.push_str(
+            "\n### PCIe 拓扑（加速器子树）\n\n按上游桥链合并共享分支；`←` 为加速器端点。\n\n```\n",
+        );
+        for line in topology {
+            out.push_str(&line);
+            out.push('\n');
+        }
+        out.push_str("```\n");
     }
     render_p2p(out, p.p2p.as_ref());
     if let Some(storage) = &p.storage {
@@ -629,14 +644,17 @@ fn render_p2p(out: &mut String, p2p: Option<&crate::domain::P2pSnapshot>) {
         out.push_str("P2P 拓扑与能力：未知。\n");
         return;
     };
-    out.push_str("`nvidia-smi topo` 表示驱动识别的能力/路径，不是带宽实测。\n\n");
-    out.push_str("| 源 GPU | 目标 GPU | 路径 | 读 | 写 | PCIe P2P | NVLink P2P | 原子操作 |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n");
+    out.push_str(
+        "`nvidia-smi topo` / `efsmi --topo -m` 表示驱动识别的能力/路径，不是带宽实测。\n\n",
+    );
+    out.push_str("| 源 GPU | 目标 GPU | 路径 | 上行汇聚点 | 读 | 写 | PCIe P2P | NVLink P2P | 原子操作 |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
     for link in p2p.links.iter().take(128) {
         out.push_str(&format!(
-            "| GPU{} | GPU{} | {} | {} | {} | {} | {} | {} |\n",
+            "| GPU{} | GPU{} | {} | {} | {} | {} | {} | {} | {} |\n",
             link.source_gpu,
             link.target_gpu,
             esc(link.topology_path.as_deref().unwrap_or("未知")),
+            esc(link.upstream_meeting_bdf.as_deref().unwrap_or("未知")),
             link.read.label(),
             link.write.label(),
             link.pcie.label(),
@@ -645,7 +663,9 @@ fn render_p2p(out: &mut String, p2p: Option<&crate::domain::P2pSnapshot>) {
         ));
     }
     if p2p.links.is_empty() {
-        out.push_str("| - | - | 未发现可比较的 GPU pair | 未知 | 未知 | 未知 | 未知 | 未知 |\n");
+        out.push_str(
+            "| - | - | 未发现可比较的 GPU pair | 未知 | 未知 | 未知 | 未知 | 未知 | 未知 |\n",
+        );
     } else if p2p.links.len() > 128 {
         out.push_str(&format!(
             "\n> P2P 列表已截断，仅展示 128/{} 项。\n",
@@ -759,6 +779,7 @@ mod tests {
                 source_gpu: 0,
                 target_gpu: 1,
                 topology_path: Some("PIX".to_owned()),
+                upstream_meeting_bdf: None,
                 read: P2pCapabilityStatus::Supported,
                 write: P2pCapabilityStatus::Supported,
                 pcie: P2pCapabilityStatus::Supported,

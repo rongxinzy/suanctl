@@ -46,7 +46,7 @@ impl RuntimeCollector {
     pub fn new() -> Self {
         Self {
             host: Box::new(crate::collectors::host::LinuxHostCollector::default()),
-            gpu: Box::new(crate::collectors::gpu::NvidiaSmiCollector::default()),
+            gpu: Box::new(crate::collectors::gcu::ChainGpuCollector::default()),
             platform: Box::new(crate::collectors::platform::LinuxPlatformCollector::default()),
             logs: Box::new(crate::collectors::logs::LinuxLogCollector::default()),
             plugin: Box::new(crate::collectors::plugin::UnavailablePluginCollector),
@@ -172,6 +172,16 @@ impl RuntimeCollector {
             logs: Some(logs),
             remote: None,
         };
+        // P2P 链路 × PCIe 树：补齐两端 GPU 的上行汇聚点（供诊断与报告使用）。
+        if let Some(platform) = snapshot.platform.as_mut() {
+            if let Some(p2p) = platform.p2p.as_mut() {
+                crate::collectors::pcie::enrich_p2p_upstream(
+                    &snapshot.gpus,
+                    &platform.pci_devices,
+                    p2p,
+                );
+            }
+        }
         snapshot.findings = diagnose(&snapshot);
         let status = runtime_status(&snapshot, &issues);
         RuntimeCollection {

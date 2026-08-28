@@ -4,9 +4,12 @@
 
 ## 能力范围
 
-- 主机、NVIDIA GPU、PCIe 链路、IOMMU、ACS、驱动与 CUDA 状态。
-  若 `nvidia-smi` 不可用，自动尝试其改名体 `querygpu`（存在即使用，并在 GPU 快照
-  `smi_tool` 字段记录实际工具）；远程设备 GPU 摘要同样支持该回退。
+- 主机、NVIDIA GPU、燧原 Enflame GCU、PCIe 链路、IOMMU、ACS、驱动与 CUDA 状态。
+  若 `nvidia-smi` 不可用，自动尝试其改名体 `querygpu`，再尝试燧原 `efsmi`
+  （存在即使用，并在 GPU 快照 `smi_tool` / `vendor` 字段记录实际工具与厂商）；
+  远程设备 GPU 摘要同样支持该回退链。
+- PCIe 加速器拓扑树：按 sysfs 父链合并共享分支，渲染 GPU/GCU 到根端口的
+  上行路径（Markdown 报告 + TUI 总览页），端点标注 NUMA 节点，厂商无关。
 - PCIe Switch、RAID/HBA、SAS PHY、mdraid 采集。
 - llama.cpp、vLLM、SGLang 的宿主机进程、Docker、Podman、nerdctl 与显式端点发现。
 - 系统日志采集与异常检测：`dmesg`、`journalctl`、`/var/log` 常见文件尾部，
@@ -16,7 +19,9 @@
 - 本地数据存储：SurrealDB 嵌入式历史快照库（`suanctl save` / `suanctl history`）。
 - GPU P2P 驱动能力矩阵、拓扑路径与实测速率：**内置 CUDA Samples 的
   p2pBandwidthLatencyTest**（构建时检测到 nvcc + libcudart 即编译进二进制，
-  无外部依赖）；未内置时回退 NVBandwidth。
+  无外部依赖）；未内置时回退 NVBandwidth。Enflame GCU 回退 `efsmi --topo -m`
+  拓扑路径矩阵（仅路径，能力字段为未知）。每条链路标注两端 GPU 在 PCIe 树上的
+  上行汇聚点（最近公共上游桥），并对跨 NUMA 的 P2P 链路给出诊断告警。
 - 内置 NCCL all_reduce 基准（`suanctl nccl`，构建时检测到 nccl.h + libnccl 才编译）。
 - JSON、JSONL、Markdown 证据报告。
 

@@ -9,6 +9,7 @@ pub mod agent;
 pub mod command;
 pub mod cuda;
 pub mod demo;
+pub mod gcu;
 pub mod gpu;
 pub mod host;
 pub mod logs;
@@ -103,7 +104,7 @@ impl GpuCollector for UnavailableCollector {
     fn collect_gpus(&self) -> Result<Vec<GpuSnapshot>, CollectorError> {
         Err(CollectorError::unavailable(
             "gpu",
-            "当前调用路径未配置 NVIDIA GPU 采集器",
+            "当前调用路径未配置 GPU 采集器",
         ))
     }
 }

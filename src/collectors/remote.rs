@@ -330,9 +330,9 @@ impl<R: CommandRunner> RemoteScanner<R> {
 /// 固定只读命令：主机与负载信息。
 const HOST_INFO_CMD: &str =
     "hostname; uname -srm; head -n 2 /etc/os-release 2>/dev/null; uptime; cat /proc/loadavg 2>/dev/null";
-/// 固定只读命令：GPU 摘要（nvidia-smi 不可用时尝试 querygpu 改名体）。
+/// 固定只读命令：GPU 摘要（nvidia-smi 不可用时尝试 querygpu 改名体，再尝试 efsmi）。
 const GPU_SUMMARY_CMD: &str =
-    "(nvidia-smi --query-gpu=index,name,utilization.gpu,temperature.gpu,memory.used --format=csv,noheader 2>/dev/null || querygpu --query-gpu=index,name,utilization.gpu,temperature.gpu,memory.used --format=csv,noheader 2>/dev/null) || echo nvidia-smi-unavailable";
+    "(nvidia-smi --query-gpu=index,name,utilization.gpu,temperature.gpu,memory.used --format=csv,noheader 2>/dev/null || querygpu --query-gpu=index,name,utilization.gpu,temperature.gpu,memory.used --format=csv,noheader 2>/dev/null || efsmi -q -d DEVICE,POWER,TEMP,MEMORY,USAGE 2>/dev/null | grep -E '^(DEV ID|[[:space:]]+(Dev Name|GCU Temp|Cur Power|Total Size|Used Size|GCU Usage)[[:space:]]*:)') || echo gpu-smi-unavailable";
 
 fn truncate_summary(output: &str, max_chars: usize) -> String {
     let trimmed = output.trim();

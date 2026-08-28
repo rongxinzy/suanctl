@@ -42,6 +42,7 @@ pub fn snapshot() -> DashboardSnapshot {
                 reset_required: Some(false),
                 xid_codes: Some(Vec::new()),
                 smi_tool: None,
+                vendor: Some("NVIDIA".to_owned()),
             },
             GpuSnapshot {
                 index: 1,
@@ -60,6 +61,7 @@ pub fn snapshot() -> DashboardSnapshot {
                 reset_required: Some(false),
                 xid_codes: Some(Vec::new()),
                 smi_tool: None,
+                vendor: Some("NVIDIA".to_owned()),
             },
         ],
         services: vec![

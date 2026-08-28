@@ -160,9 +160,12 @@ pub struct GpuSnapshot {
     pub reset_required: Option<bool>,
     #[serde(default)]
     pub xid_codes: Option<Vec<u32>>,
-    /// 实际使用的 SMI 工具（"nvidia-smi" 或其改名体 "querygpu"）。
+    /// 实际使用的 SMI 工具（"nvidia-smi"、其改名体 "querygpu" 或 "efsmi"）。
     #[serde(default)]
     pub smi_tool: Option<String>,
+    /// GPU 厂商（"NVIDIA" / "Enflame" 等），由采集器按工具来源标注。
+    #[serde(default)]
+    pub vendor: Option<String>,
 }
 
 /// 文件、命令或 sysfs 观测到的存在性。`Unknown` 表示没有足够证据，
@@ -488,6 +491,9 @@ pub struct GpuP2pLinkSnapshot {
     /// Raw NVIDIA topology token: PIX/PXB/PHB/NODE/SYS/NV#.
     #[serde(default)]
     pub topology_path: Option<String>,
+    /// 两 GPU 在 PCIe 树上行链路的汇聚点 BDF（sysfs 父链推得的最近公共上游桥）。
+    #[serde(default)]
+    pub upstream_meeting_bdf: Option<String>,
     #[serde(default)]
     pub read: P2pCapabilityStatus,
     #[serde(default)]
