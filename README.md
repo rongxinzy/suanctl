@@ -7,7 +7,12 @@
 - 主机、NVIDIA GPU、燧原 Enflame GCU、PCIe 链路、IOMMU、ACS、驱动与 CUDA 状态。
   若 `nvidia-smi` 不可用，自动尝试其改名体 `querygpu`，再尝试燧原 `efsmi`
   （存在即使用，并在 GPU 快照 `smi_tool` / `vendor` 字段记录实际工具与厂商）；
-  远程设备 GPU 摘要同样支持该回退链。
+  远程设备 GPU 摘要同样支持该回退链。Enflame 侧额外采集驱动版本、设备 SN、
+  ECC 开关、分类错误计数（SIP/Bus/FW/DTE/DRAM HBM/PCIE/GCU-LARE 等）与
+  累计复位次数，并兼容新旧两版 efsmi 输出格式。
+- GPU 厂商画像接口（`src/vendors.rs`）：电源状态术语（P 态 / DPM）、GPU 表
+  备注列、「平台与健康」厂商段与厂商诊断规则全部收敛到 `VendorProfile`
+  trait；NVIDIA / Enflame / Generic 已实现，接入新厂商只需实现该 trait 并注册。
 - PCIe 加速器拓扑树：按 sysfs 父链合并共享分支，渲染 GPU/GCU 到根端口的
   上行路径（Markdown 报告 + TUI 总览页），端点标注 NUMA 节点，厂商无关。
 - PCIe Switch、RAID/HBA、SAS PHY、mdraid 采集。
@@ -38,6 +43,23 @@
   带宽/延迟矩阵测试，不再依赖外部 nvbandwidth。
 - 检测到 `nccl.h` + `libnccl` → 编译 `third_party/nccl_test/`（最小 all_reduce
   基准）进二进制，`suanctl nccl` 执行。
+
+### 打包：完整版与轻量版
+
+```bash
+make dist-full     # 完整版：测速器强制嵌入二进制（构建机需 nvcc，缺失即报错）
+make dist-lite     # 轻量版：仅本体，不内置任何 CUDA 测速器
+make cuda-testers  # 单独编译 CUDA 测速器到 dist/cuda-testers/（需 nvcc）
+```
+
+轻量版可在事后补齐 P2P 实测能力：把 `make cuda-testers` 的产物
+`suanctl-p2p-test` 放到以下任一位置，运行时自动发现（优先级从高到低）：
+
+1. 环境变量 `SUANCTL_P2P_TEST_BIN=/path/to/suanctl-p2p-test`
+2. `suanctl` 主程序同目录
+3. `~/.suanctl/bin/suanctl-p2p-test`
+
+测速器动态链接系统 `libcudart`，需与目标机的 CUDA runtime 匹配。
 
 ## 快速开始
 

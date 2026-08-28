@@ -38,6 +38,11 @@ pub trait DiagnosisEngine {
 pub fn diagnose(snapshot: &DashboardSnapshot) -> Vec<DiagnosisFinding> {
     let mut findings = Vec::new();
     diagnose_gpus(snapshot, &mut findings);
+    // 厂商专属规则（Xid/reset 属 NVIDIA，分类错误计数属 Enflame……）收敛在
+    // 厂商画像里；这里只对快照中实际出现的厂商各跑一次。
+    for profile in crate::vendors::present_profiles(&snapshot.gpus) {
+        profile.diagnose(snapshot, &mut findings);
+    }
     diagnose_p2p_topology(snapshot, &mut findings);
     diagnose_services(snapshot, &mut findings);
     diagnose_platform(snapshot, &mut findings);
@@ -62,24 +67,6 @@ impl DiagnosisEngine for ReadOnlyDiagnosisEngine {
 fn diagnose_gpus(snapshot: &DashboardSnapshot, findings: &mut Vec<DiagnosisFinding>) {
     for gpu in &snapshot.gpus {
         let object = format!("gpu-{}", gpu.index);
-        if gpu.reset_required == Some(true) {
-            findings.push(finding(
-                "gpu-reset-required",
-                &object,
-                HealthStatus::Critical,
-                "GPU 需要复位",
-                [format!("GPU {} reset_required=true", gpu.index)],
-            ));
-        }
-        if let Some(codes) = gpu.xid_codes.as_ref().filter(|codes| !codes.is_empty()) {
-            findings.push(finding(
-                "gpu-xid",
-                &object,
-                HealthStatus::Critical,
-                "GPU 存在 Xid 错误码",
-                [format!("GPU {} Xid={:?}", gpu.index, codes)],
-            ));
-        }
         match gpu.status {
             HealthStatus::Critical => findings.push(finding(
                 "gpu-status",
@@ -554,7 +541,7 @@ fn risk_status(status: HealthStatus) -> HealthStatus {
     }
 }
 
-fn finding<const N: usize>(
+pub(crate) fn finding<const N: usize>(
     rule: &str,
     object: &str,
     status: HealthStatus,
@@ -577,7 +564,7 @@ fn finding<const N: usize>(
 }
 
 /// 带修复建议的诊断结论（只读建议，不代执行）。
-fn finding_with_suggestion<const N: usize>(
+pub(crate) fn finding_with_suggestion<const N: usize>(
     rule: &str,
     object: &str,
     status: HealthStatus,
@@ -706,7 +693,12 @@ mod tests {
             reset_required: reset,
             xid_codes: Some(xid.to_vec()),
             smi_tool: None,
-            vendor: None,
+            vendor: Some("NVIDIA".to_owned()),
+            serial_number: None,
+            driver_version: None,
+            ecc_enabled: None,
+            error_details: Default::default(),
+            reset_count: None,
         }
     }
 
@@ -1099,6 +1091,11 @@ mod tests {
             xid_codes: Some(Vec::new()),
             smi_tool: None,
             vendor: Some("NVIDIA".to_owned()),
+            serial_number: None,
+            driver_version: None,
+            ecc_enabled: None,
+            error_details: Default::default(),
+            reset_count: None,
         };
         snapshot.gpus = vec![l20(0, 56, 87.95), l20(1, 57, 89.53)];
         snapshot.logs = Some(crate::domain::LogSnapshot {

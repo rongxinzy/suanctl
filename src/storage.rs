@@ -401,26 +401,10 @@ fn render_platform(
             .unwrap_or_else(|| "未知".to_owned()),
         p.iommu.status,
     ));
-    out.push_str(&row(
-        "NVIDIA 内核模块",
-        unknown(p.nvidia_driver.kernel_module_version.as_ref()),
-        p.nvidia_driver.status,
-    ));
-    out.push_str(&row(
-        "NVIDIA-smi 驱动",
-        unknown(p.nvidia_driver.nvidia_smi_driver_version.as_ref()),
-        p.nvidia_driver.status,
-    ));
-    out.push_str(&row(
-        "CUDA 驱动报告最高版本（非 Toolkit）",
-        unknown(p.cuda.driver_reported_max_cuda.as_ref()),
-        p.cuda.status,
-    ));
-    out.push_str(&row(
-        "已安装 CUDA Toolkit（nvcc）",
-        unknown(p.cuda.nvcc_toolkit_version.as_ref()),
-        p.cuda.status,
-    ));
+    // 厂商段（NVIDIA 驱动/CUDA 或 Enflame 驱动/ECC/错误计数……）由厂商画像提供。
+    for (item, value, status) in crate::vendors::platform_facts(Some(p), gpus) {
+        out.push_str(&row(&item, value, status));
+    }
     out.push_str(&row("PCIe 设备数量", p.pci_devices.len(), p.status));
     if let Some(summary) = &p.acs_summary {
         out.push_str(&format!(

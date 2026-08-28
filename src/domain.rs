@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 pub type TimestampMillis = u64;
 
@@ -166,6 +167,22 @@ pub struct GpuSnapshot {
     /// GPU 厂商（"NVIDIA" / "Enflame" 等），由采集器按工具来源标注。
     #[serde(default)]
     pub vendor: Option<String>,
+    /// 设备序列号（SN，厂商工具提供时；如 efsmi 的 Dev SN）。
+    #[serde(default)]
+    pub serial_number: Option<String>,
+    /// 驱动版本（采集工具报告的单卡视角，如 efsmi 的 Driver Ver）。
+    #[serde(default)]
+    pub driver_version: Option<String>,
+    /// ECC 当前是否开启（厂商工具报告；Enflame 取 ECC Mode Current）。
+    #[serde(default)]
+    pub ecc_enabled: Option<bool>,
+    /// 分类错误计数（如 efsmi Error Details：SIP/Bus/FW/DTE/DRAM HBM/PCIE 等）。
+    /// 空表示未采集，不伪造。
+    #[serde(default)]
+    pub error_details: BTreeMap<String, u64>,
+    /// 累计复位次数（厂商工具提供时；Enflame 取 Reset Count）。
+    #[serde(default)]
+    pub reset_count: Option<u64>,
 }
 
 /// 文件、命令或 sysfs 观测到的存在性。`Unknown` 表示没有足够证据，
@@ -177,6 +194,16 @@ pub enum PresenceStatus {
     Absent,
     #[default]
     Unknown,
+}
+
+impl PresenceStatus {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Present => "存在",
+            Self::Absent => "不存在",
+            Self::Unknown => "未知",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

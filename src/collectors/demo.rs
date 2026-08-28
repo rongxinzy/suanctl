@@ -43,6 +43,11 @@ pub fn snapshot() -> DashboardSnapshot {
                 xid_codes: Some(Vec::new()),
                 smi_tool: None,
                 vendor: Some("NVIDIA".to_owned()),
+                serial_number: None,
+                driver_version: None,
+                ecc_enabled: None,
+                error_details: Default::default(),
+                reset_count: None,
             },
             GpuSnapshot {
                 index: 1,
@@ -62,6 +67,11 @@ pub fn snapshot() -> DashboardSnapshot {
                 xid_codes: Some(Vec::new()),
                 smi_tool: None,
                 vendor: Some("NVIDIA".to_owned()),
+                serial_number: None,
+                driver_version: None,
+                ecc_enabled: None,
+                error_details: Default::default(),
+                reset_count: None,
             },
         ],
         services: vec![

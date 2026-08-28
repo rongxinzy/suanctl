@@ -1516,6 +1516,11 @@ mod tests {
             xid_codes: None,
             smi_tool: None,
             vendor: None,
+            serial_number: None,
+            driver_version: None,
+            ecc_enabled: None,
+            error_details: Default::default(),
+            reset_count: None,
         }
     }
 

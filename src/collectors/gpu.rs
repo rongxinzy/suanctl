@@ -1,5 +1,6 @@
 //! NVIDIA GPU 的只读 `nvidia-smi` 采集。
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -242,6 +243,11 @@ fn parse_gpu(
         xid_codes: None,
         smi_tool: None,
         vendor: Some("NVIDIA".to_owned()),
+        serial_number: None,
+        driver_version: None,
+        ecc_enabled: None,
+        error_details: BTreeMap::new(),
+        reset_count: None,
     })
 }
 

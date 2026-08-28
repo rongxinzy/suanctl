@@ -208,7 +208,7 @@ fn gpu_table(
             "利用率",
             "显存",
             "功耗",
-            "P态",
+            crate::vendors::power_state_header(&state.snapshot.gpus),
             "状态",
             "备注",
         ];
@@ -221,7 +221,7 @@ fn gpu_table(
             Constraint::Length(8),
             Constraint::Length(14),
             Constraint::Length(12),
-            Constraint::Length(4),
+            Constraint::Length(8),
             Constraint::Length(8),
             Constraint::Length(14),
         ];
@@ -248,20 +248,6 @@ fn gpu_table(
                         }),
                     None => "--".into(),
                 };
-                let reset = gpu.reset_required.map_or("未知".to_owned(), |v| {
-                    if v {
-                        "需reset".to_owned()
-                    } else {
-                        "正常".to_owned()
-                    }
-                });
-                let xid = gpu.xid_codes.as_ref().map_or("Xid未知".into(), |codes| {
-                    if codes.is_empty() {
-                        String::from("无Xid")
-                    } else {
-                        format!("Xid:{}", join_u32(codes))
-                    }
-                });
                 let mut cells = vec![
                     Cell::from(format!("GPU{}", gpu.index)),
                     Cell::from(shorten(&gpu.name, 20)),
@@ -274,16 +260,8 @@ fn gpu_table(
                     Cell::from(opt_ref(&gpu.pstate)),
                     Cell::from(gpu.status.label()),
                 ];
-                // reset/Xid 是 NVIDIA 语义；其他厂商显示采集工具来源，不误导。
-                let remark = if gpu
-                    .vendor
-                    .as_deref()
-                    .is_none_or(|vendor| vendor == "NVIDIA")
-                {
-                    format!("{reset}/{xid}")
-                } else {
-                    gpu.smi_tool.clone().unwrap_or_else(|| "—".into())
-                };
+                // 备注列的语义由厂商画像决定（NVIDIA: reset/Xid；Enflame: ECC/错误计数……）。
+                let remark = crate::vendors::profile_for(gpu.vendor.as_deref()).gpu_remark(gpu);
                 cells.push(Cell::from(remark));
                 Row::new(cells)
             })
@@ -553,30 +531,16 @@ fn overview_platform_lines(state: &AppState) -> Vec<Line<'static>> {
             "IOMMU：requested={} effective={}  ACS override：{}",
             requested, iommu, override_text
         )));
-        lines.push(Line::from(format!(
-            "NVIDIA module：{}  内核版本：{}",
-            opt_ref(&platform.nvidia_driver.module_loaded.map(|v| if v {
-                "已加载"
+        // 厂商段（NVIDIA 驱动/CUDA 或 Enflame 驱动/ECC/错误计数……）由厂商画像提供。
+        for (item, value, status) in
+            crate::vendors::platform_facts(Some(platform), &state.snapshot.gpus)
+        {
+            if status == HealthStatus::Unknown {
+                lines.push(Line::from(format!("{item}：{value}")));
             } else {
-                "未加载"
-            })),
-            opt_ref(&platform.nvidia_driver.kernel_module_version)
-        )));
-        lines.push(Line::from(format!(
-            "驱动：{}  匹配：{}",
-            opt_ref(&platform.nvidia_driver.nvidia_smi_driver_version),
-            platform
-                .nvidia_driver
-                .version_match
-                .map_or("未知", |v| if v { "是" } else { "否" })
-        )));
-        lines.push(Line::from(format!(
-            "CUDA：driver={} toolkit={} libcuda={} libcudart={}",
-            opt_ref(&platform.cuda.driver_reported_max_cuda),
-            opt_ref(&platform.cuda.nvcc_toolkit_version),
-            platform.cuda.libcuda.presence.label(),
-            platform.cuda.libcudart.presence.label()
-        )));
+                lines.push(Line::from(format!("{item}：{value}（{}）", status.label())));
+            }
+        }
         lines.push(Line::from(format!(
             "PCIe 设备：{}",
             platform.pci_devices.len()
@@ -1052,13 +1016,6 @@ fn opt<T: ToString>(value: Option<T>) -> String {
 fn opt_ref<T: ToString>(value: &Option<T>) -> String {
     value.as_ref().map_or("--".into(), ToString::to_string)
 }
-fn join_u32(values: &[u32]) -> String {
-    values
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(",")
-}
 fn join_strings(values: &[String], max: usize) -> String {
     values
         .iter()
@@ -1076,19 +1033,6 @@ fn shorten(value: &str, max: usize) -> String {
             .take(max.saturating_sub(1))
             .collect::<String>()
             + "…"
-    }
-}
-
-trait PresenceLabel {
-    fn label(self) -> &'static str;
-}
-impl PresenceLabel for crate::domain::PresenceStatus {
-    fn label(self) -> &'static str {
-        match self {
-            crate::domain::PresenceStatus::Present => "存在",
-            crate::domain::PresenceStatus::Absent => "不存在",
-            crate::domain::PresenceStatus::Unknown => "未知",
-        }
     }
 }
 

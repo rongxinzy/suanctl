@@ -9,6 +9,9 @@
 //!   设置 cfg `suanctl_builtin_nccl`。
 //! - 工具链缺失时静默跳过：构建照常成功，运行时相应能力报告 Unavailable。
 //!   因此 suanctl 在无 GPU/CUDA 的机器上依然可以构建与使用（主二进制零 CUDA 依赖）。
+//! - 环境变量 `SUANCTL_BUILTIN_TESTERS`：`1`/`on` 强制内置（工具链缺失即构建
+//!   失败，用于完整版打包）；`0`/`off` 跳过全部 CUDA 测速器（轻量版，运行时
+//!   可发现外部测速器二进制补齐能力）；缺省 `auto` 即上面的探测行为。
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -25,29 +28,55 @@ fn main() {
     println!("cargo:rerun-if-changed={P2P_SOURCE}");
     println!("cargo:rerun-if-changed={NCCL_SOURCE}");
     println!("cargo:rerun-if-env-changed=PATH");
+    println!("cargo:rerun-if-env-changed=SUANCTL_BUILTIN_TESTERS");
 
-    // P2P：需要 nvcc（cudart 头随 toolkit 提供；可执行动态链系统 libcudart）。
+    // SUANCTL_BUILTIN_TESTERS=auto（缺省）：探测到工具链就内置；=1/on：强制内置，
+    // 工具链缺失或编译失败直接报错（供 make dist-full 显式失败）；=0/off：跳过
+    // 全部 CUDA 测速器（轻量版，主程序运行时可发现外部测速器补齐能力）。
+    let mode = std::env::var("SUANCTL_BUILTIN_TESTERS").unwrap_or_else(|_| "auto".to_owned());
+    match mode.as_str() {
+        "0" | "off" => {
+            println!("cargo:warning=suanctl: SUANCTL_BUILTIN_TESTERS={mode}，跳过内置 CUDA 测速器（轻量版）");
+            return;
+        }
+        "1" | "on" => {
+            let nvcc = find_nvcc().unwrap_or_else(|| {
+                panic!("SUANCTL_BUILTIN_TESTERS={mode} 要求 CUDA 工具链，但未找到 nvcc")
+            });
+            if !compile_cuda_binary(&nvcc, P2P_DIR, P2P_SOURCE, P2P_BIN, &out_dir, None) {
+                panic!("SUANCTL_BUILTIN_TESTERS={mode}：内置 P2P 测速器编译失败");
+            }
+            println!("cargo:rustc-cfg=suanctl_builtin_p2p");
+            compile_nccl_if_available(&nvcc, &out_dir);
+            return;
+        }
+        _ => {}
+    }
+
+    // auto：工具链缺失时静默跳过，构建照常成功，运行时相应能力报告 Unavailable。
     if let Some(nvcc) = find_nvcc() {
         if compile_cuda_binary(&nvcc, P2P_DIR, P2P_SOURCE, P2P_BIN, &out_dir, None) {
             println!("cargo:rustc-cfg=suanctl_builtin_p2p");
         }
+        compile_nccl_if_available(&nvcc, &out_dir);
     }
+}
 
-    // NCCL：需要 nccl.h + libnccl（动态链系统 libnccl）。
-    if find_nccl() {
-        if let Some(nvcc) = find_nvcc() {
-            let cuda_lib = find_cuda_library_dir(&cuda_root_of(&nvcc));
-            if compile_cuda_binary(
-                &nvcc,
-                NCCL_DIR,
-                NCCL_SOURCE,
-                NCCL_BIN,
-                &out_dir,
-                cuda_lib.as_deref(),
-            ) {
-                println!("cargo:rustc-cfg=suanctl_builtin_nccl");
-            }
-        }
+/// NCCL all_reduce 基准保持机会性内置：需要 nccl.h + libnccl，缺失时静默跳过。
+fn compile_nccl_if_available(nvcc: &Path, out_dir: &Path) {
+    if !find_nccl() {
+        return;
+    }
+    let cuda_lib = find_cuda_library_dir(&cuda_root_of(nvcc));
+    if compile_cuda_binary(
+        nvcc,
+        NCCL_DIR,
+        NCCL_SOURCE,
+        NCCL_BIN,
+        out_dir,
+        cuda_lib.as_deref(),
+    ) {
+        println!("cargo:rustc-cfg=suanctl_builtin_nccl");
     }
 }
 

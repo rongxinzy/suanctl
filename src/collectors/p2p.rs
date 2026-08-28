@@ -5,6 +5,8 @@
 //! benchmark 入口调用（仅 NVIDIA 路径支持）。
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
@@ -22,6 +24,47 @@ use super::CollectorError;
 pub const DEFAULT_P2P_TIMEOUT: Duration = Duration::from_secs(2);
 pub const DEFAULT_P2P_BENCHMARK_TIMEOUT: Duration = Duration::from_secs(120);
 pub const NVBANDWIDTH_TESTCASE: &str = "device_to_device_memcpy_write_ce";
+
+/// 外部 P2P 测速器文件名。轻量版（未内置测速器）把 nvcc 编译出的该文件放到
+/// 搜索路径之一即可补齐 P2P 实测能力。
+pub const EXTERNAL_P2P_TESTER_NAME: &str = "suanctl-p2p-test";
+
+/// 外部 P2P 测速器搜索顺序：`$SUANCTL_P2P_TEST_BIN` → 主程序同目录 →
+/// `~/.suanctl/bin/`。返回第一个存在的文件。
+pub fn find_external_p2p_tester() -> Option<PathBuf> {
+    find_external_p2p_tester_in(
+        std::env::var_os("SUANCTL_P2P_TEST_BIN"),
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(Path::to_path_buf)),
+        std::env::var_os("HOME").map(PathBuf::from),
+    )
+}
+
+fn find_external_p2p_tester_in(
+    env_override: Option<OsString>,
+    exe_dir: Option<PathBuf>,
+    home: Option<PathBuf>,
+) -> Option<PathBuf> {
+    let candidates = [
+        env_override.map(PathBuf::from),
+        exe_dir.map(|dir| dir.join(EXTERNAL_P2P_TESTER_NAME)),
+        home.map(|dir| dir.join(".suanctl/bin").join(EXTERNAL_P2P_TESTER_NAME)),
+    ];
+    candidates.into_iter().flatten().find(|path| path.is_file())
+}
+
+/// 以子进程执行测速器二进制（stdio 继承，矩阵直接输出到终端）。
+fn run_p2p_tester_binary(path: &Path) -> Result<(), String> {
+    let status = std::process::Command::new(path).status().map_err(|error| {
+        format!("测速器启动失败（目标机器缺少 CUDA runtime libcudart？）：{error}")
+    })?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("退出码 {:?}", status.code()))
+    }
+}
 
 /// 调用内置 P2P 测速器（CUDA Samples p2pBandwidthLatencyTest）。
 /// 构建时 nvcc 将其编译为独立可执行并嵌入（`suanctl_p2p_test_bin`），运行时解包为
@@ -43,17 +86,21 @@ pub fn run_builtin_p2p_test() -> Result<(), String> {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755));
     }
-    let status = std::process::Command::new(&path)
-        .status()
-        .map_err(|error| {
-            let _ = std::fs::remove_file(&path);
-            format!("测速器启动失败（目标机器缺少 CUDA runtime libcudart？）：{error}")
-        })?;
+    let result = run_p2p_tester_binary(&path);
     let _ = std::fs::remove_file(&path);
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("退出码 {:?}", status.code()))
+    result
+}
+
+/// CUDA Samples 测速成功时的快照（内置与外部测速器共用）。
+fn cuda_samples_benchmark_snapshot(measured_at: u64, tool: String) -> P2pBenchmarkSnapshot {
+    P2pBenchmarkSnapshot {
+        status: P2pBenchmarkStatus::Succeeded,
+        tool,
+        testcase: "p2p_bandwidth_latency_matrix".to_owned(),
+        measured_at: Some(measured_at),
+        direction_description: Some("单向带宽矩阵 + 延迟矩阵（P2P 开/关，写入方向）".to_owned()),
+        measurements: Vec::new(),
+        message: Some("CUDA Samples P2P 测速完成，矩阵见终端输出".to_owned()),
     }
 }
 
@@ -212,29 +259,41 @@ impl<R: CommandRunner> NvidiaP2pCollector<R> {
     }
 
     /// 显式运行 P2P 实测。优先使用内置 CUDA Samples 测速器（构建时编译进
-    /// 二进制、无外部依赖）；未编译（构建机无 nvcc）或执行失败时回退外部
-    /// `nvbandwidth`（若安装）。
+    /// 二进制、无外部依赖）；轻量版或内置执行失败时查找外部测速器
+    /// （`$SUANCTL_P2P_TEST_BIN` → 主程序同目录 → `~/.suanctl/bin/`）；
+    /// 均不可用则回退外部 `nvbandwidth`（若安装）。
     pub fn run_benchmark(&self) -> (P2pBenchmarkSnapshot, Vec<CollectionIssue>) {
         #[cfg(suanctl_builtin_p2p)]
         {
             let measured_at = now_millis();
             match run_builtin_p2p_test() {
                 Ok(()) => {
-                    let snapshot = P2pBenchmarkSnapshot {
-                        status: P2pBenchmarkStatus::Succeeded,
-                        tool: "内置 p2pBandwidthLatencyTest (CUDA Samples 13.2)".to_owned(),
-                        testcase: "p2p_bandwidth_latency_matrix".to_owned(),
-                        measured_at: Some(measured_at),
-                        direction_description: Some(
-                            "单向带宽矩阵 + 延迟矩阵（P2P 开/关，写入方向）".to_owned(),
-                        ),
-                        measurements: Vec::new(),
-                        message: Some("内置 CUDA Samples P2P 测速完成，矩阵见终端输出".to_owned()),
-                    };
+                    let snapshot = cuda_samples_benchmark_snapshot(
+                        measured_at,
+                        "内置 p2pBandwidthLatencyTest (CUDA Samples 13.2)".to_owned(),
+                    );
                     return (snapshot, Vec::new());
                 }
                 Err(message) => {
-                    eprintln!("内置 P2P 测速不可用（{message}），回退 nvbandwidth");
+                    eprintln!("内置 P2P 测速不可用（{message}），尝试外部测速器");
+                }
+            }
+        }
+        if let Some(tester) = find_external_p2p_tester() {
+            let measured_at = now_millis();
+            match run_p2p_tester_binary(&tester) {
+                Ok(()) => {
+                    let snapshot = cuda_samples_benchmark_snapshot(
+                        measured_at,
+                        format!("外部 p2pBandwidthLatencyTest（{}）", tester.display()),
+                    );
+                    return (snapshot, Vec::new());
+                }
+                Err(message) => {
+                    eprintln!(
+                        "外部 P2P 测速器（{}）执行失败（{message}），回退 nvbandwidth",
+                        tester.display()
+                    );
                 }
             }
         }
@@ -1074,5 +1133,54 @@ mod tests {
         let benchmark = &collection.snapshot.benchmark;
         assert_eq!(benchmark.status, P2pBenchmarkStatus::Unavailable);
         assert!(benchmark.measurements.is_empty());
+    }
+
+    #[test]
+    fn external_tester_search_prefers_env_then_exe_dir_then_home() {
+        let root = std::env::temp_dir().join(format!(
+            "suanctl-p2p-search-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let exe_dir = root.join("exe");
+        let home_bin = root.join("home/.suanctl/bin");
+        std::fs::create_dir_all(&exe_dir).unwrap();
+        std::fs::create_dir_all(&home_bin).unwrap();
+        let env_bin = root.join("custom-p2p-test");
+        let exe_bin = exe_dir.join(EXTERNAL_P2P_TESTER_NAME);
+        let home_bin = home_bin.join(EXTERNAL_P2P_TESTER_NAME);
+        for path in [&env_bin, &exe_bin, &home_bin] {
+            std::fs::write(path, b"x").unwrap();
+        }
+        let home = root.join("home");
+
+        // 三处都有：env 优先。
+        assert_eq!(
+            find_external_p2p_tester_in(
+                Some(env_bin.as_os_str().to_owned()),
+                Some(exe_dir.clone()),
+                Some(home.clone()),
+            ),
+            Some(env_bin.clone())
+        );
+        // 无 env：主程序同目录。
+        assert_eq!(
+            find_external_p2p_tester_in(None, Some(exe_dir), Some(home.clone())),
+            Some(exe_bin)
+        );
+        // 只剩 home。
+        assert_eq!(
+            find_external_p2p_tester_in(None, None, Some(home)),
+            Some(home_bin)
+        );
+        // 全部缺失。
+        assert_eq!(
+            find_external_p2p_tester_in(Some(root.join("nope").as_os_str().to_owned()), None, None,),
+            None
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

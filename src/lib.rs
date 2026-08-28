@@ -11,3 +11,4 @@ pub mod storage;
 pub mod store;
 pub mod tui;
 pub mod ui;
+pub mod vendors;

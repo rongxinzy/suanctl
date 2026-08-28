@@ -246,6 +246,27 @@ fn build_snapshot(index: u32, fields: &BTreeMap<String, String>, sysfs_root: &Pa
         _ => None,
     };
 
+    // Error Details 分类计数（燧原故障定位语义，等价于 NVIDIA Xid 的角色）。
+    let error_details = [
+        "User Triggered Reset",
+        "Internal Error",
+        "SIP Error",
+        "Bus Error",
+        "FW Error",
+        "DTE Error",
+        "DRAM HBM Error",
+        "PCIE Error",
+        "GCU-LARE Error",
+        "Unknown Error",
+    ]
+    .into_iter()
+    .filter_map(|key| {
+        get(key)
+            .and_then(parse_leading_u64)
+            .map(|v| (key.to_owned(), v))
+    })
+    .collect();
+
     GpuSnapshot {
         index,
         name: get("Dev Name").unwrap_or("未知 GCU").to_owned(),
@@ -258,19 +279,30 @@ fn build_snapshot(index: u32, fields: &BTreeMap<String, String>, sysfs_root: &Pa
         utilization_percent: get("GCU Usage")
             .and_then(parse_leading_f64)
             .map(|value| value.round() as u32),
-        memory_used_mib: get("Used Size").and_then(parse_leading_u64),
-        memory_total_mib: get("Total Size").and_then(parse_leading_u64),
+        memory_used_mib: get("Used Size")
+            .or_else(|| get("Mem Usage"))
+            .and_then(parse_leading_u64),
+        memory_total_mib: get("Total Size")
+            .or_else(|| get("Mem Size"))
+            .and_then(parse_leading_u64),
         power_draw_watts: get("Cur Power").and_then(parse_leading_f64),
         power_limit_watts: get("Power Capa").and_then(parse_leading_f64),
         pstate: get("Dpm Level").map(str::to_owned),
         numa_node: pci_address
             .as_deref()
             .and_then(|address| read_numa_node(sysfs_root, address)),
-        // Enflame 无 Xid / reset 对应语义，保持 None 不伪造。
+        // Enflame 无 Xid / reset 待办语义，保持 None 不伪造（复位次数见 reset_count）。
         reset_required: None,
         xid_codes: None,
         smi_tool: Some("efsmi".to_owned()),
         vendor: Some("Enflame".to_owned()),
+        serial_number: get("Dev SN").map(str::to_owned),
+        driver_version: get("Ver").map(str::to_owned),
+        ecc_enabled: get("Current")
+            .or_else(|| get("Mem Ecc"))
+            .map(|value| value.eq_ignore_ascii_case("enable")),
+        error_details,
+        reset_count: get("Reset Count").and_then(parse_leading_u64),
     }
 }
 
@@ -350,7 +382,43 @@ mod tests {
         assert_eq!(first.vendor.as_deref(), Some("Enflame"));
         assert_eq!(first.xid_codes, None);
         assert_eq!(first.reset_required, None);
+        assert_eq!(first.driver_version.as_deref(), Some("1.5.20260710"));
+        assert_eq!(first.serial_number.as_deref(), Some("A0A7P40510338"));
+        assert_eq!(first.ecc_enabled, Some(true));
+        assert_eq!(first.reset_count, Some(0));
+        assert_eq!(first.error_details.len(), 10);
+        assert!(first.error_details.values().all(|count| *count == 0));
         assert_eq!(gpus[9].index, 9);
+    }
+
+    #[test]
+    fn gcu_parses_legacy_efsmi_keys() {
+        // 旧版 efsmi（参照 gpu_tools pkg/gpu/enflame/testdata/efs.txt）：
+        // 显存键叫 Mem Size/Mem Usage，ECC 键叫 Mem Ecc。
+        let legacy = "DEV ID 0
+    Device Info
+        Dev Name                : Enflame S60
+        Health                  : True
+    PCIe Info
+        Domain                  : 0000
+        Bus                     : 0d
+        Dev                     : 00
+        Func                    : 0
+    Device Mem Info
+        Mem Size                : 42976 MiB
+        Mem Usage               : 38934 MiB
+        Mem Ecc                 : enable
+    Temperature Info
+        GCU Temp                : 35 ℃
+    Device Usage Info
+        GCU Usage               : 0.0 %
+";
+        let gpus = parse_efsmi_query(legacy, std::path::Path::new("/nonexistent"))
+            .expect("legacy fixture");
+        assert_eq!(gpus.len(), 1);
+        assert_eq!(gpus[0].memory_total_mib, Some(42976));
+        assert_eq!(gpus[0].memory_used_mib, Some(38934));
+        assert_eq!(gpus[0].ecc_enabled, Some(true));
     }
 
     #[test]

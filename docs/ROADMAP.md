@@ -15,7 +15,7 @@
 | 域 | 能力 | 入口 | 说明 |
 |---|---|---|---|
 | 主机 | hostname/OS/内核/CPU/内存/负载 | doctor/report/TUI 总览 | LinuxHostCollector |
-| GPU | 温度/利用率/显存/功耗/P态/Xid/复位（NVIDIA）；efsmi 温度/利用率/显存/功耗/Dpm/健康（Enflame GCU） | doctor/report/TUI GPU 页 | NvidiaSmiCollector / EnflameSmiCollector（回退链） |
+| GPU | 温度/利用率/显存/功耗/P态/Xid/复位（NVIDIA）；efsmi 温度/利用率/显存/功耗/Dpm/健康/驱动版本/SN/ECC/分类错误/复位计数（Enflame GCU）；厂商画像接口收敛差异 | doctor/report/TUI GPU 页 | NvidiaSmiCollector / EnflameSmiCollector（回退链）+ vendors.rs |
 | PCIe | 链路代际/宽度/带宽上限/ACS/IOMMU + 加速器上行拓扑树（父链合并，端点标注 NUMA） | 总览摘要 + 诊断 + 报告 | LinuxPcieCollector |
 | 驱动/CUDA | 模块/版本匹配/toolkit/库存在性 | 总览摘要 + 诊断 | platform.rs |
 | 存储 | RAID/HBA/SAS PHY/mdraid/storcli | 诊断 | storage.rs |
