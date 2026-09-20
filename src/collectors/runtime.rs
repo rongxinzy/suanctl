@@ -266,6 +266,9 @@ fn unavailable_host() -> HostSnapshot {
         status: HealthStatus::Unavailable,
         cpu_status: HealthStatus::Unknown,
         memory_status: HealthStatus::Unknown,
+        memory_modules: None,
+        disks: Vec::new(),
+        interfaces: Vec::new(),
     }
 }
 

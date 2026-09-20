@@ -308,9 +308,12 @@ impl AppState {
         }
     }
 
-    /// 进入 `/` 过滤模式（仅日志/诊断页）。
+    /// 进入 `/` 过滤模式（日志/诊断/出厂检测页）。
     fn enter_filter(&mut self) {
-        if matches!(self.page, UiPage::Logs | UiPage::Diagnosis) {
+        if matches!(
+            self.page,
+            UiPage::Logs | UiPage::Diagnosis | UiPage::Factory
+        ) {
             self.filter_mode = true;
             self.filter_buffer.clear();
             self.scroll_to(0);
@@ -762,14 +765,14 @@ mod tests {
         state.handle_key(key(KeyCode::Char('2')));
         state.handle_key(key(KeyCode::Down));
         assert_eq!(state.scroll_for(UiPage::Gpu), 1);
-        state.handle_key(key(KeyCode::Char('6')));
+        state.handle_key(key(KeyCode::Char('7')));
         assert_eq!(state.current_scroll(), 0);
     }
 
     #[test]
     fn filter_mode_accumulates_chars_and_esc_clears_before_quitting() {
         let mut state = AppState::new(demo::snapshot());
-        state.handle_key(key(KeyCode::Char('6'))); // 日志页
+        state.handle_key(key(KeyCode::Char('7'))); // 日志页
         state.handle_key(key(KeyCode::Char('/')));
         assert!(state.filter_mode());
         state.handle_key(key(KeyCode::Char('X')));
@@ -796,7 +799,7 @@ mod tests {
         state.handle_key(key(KeyCode::Char('1'))); // 总览页
         state.handle_key(key(KeyCode::Char('/')));
         assert!(!state.filter_mode());
-        state.handle_key(key(KeyCode::Char('6'))); // 日志页
+        state.handle_key(key(KeyCode::Char('7'))); // 日志页
         state.handle_key(key(KeyCode::Char('/')));
         assert!(state.filter_mode());
     }

@@ -51,17 +51,19 @@ pub enum UiPage {
     Gpu,
     Services,
     Diagnosis,
+    Factory,
     Reports,
     Logs,
     Remote,
 }
 
 impl UiPage {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Overview,
         Self::Gpu,
         Self::Services,
         Self::Diagnosis,
+        Self::Factory,
         Self::Reports,
         Self::Logs,
         Self::Remote,
@@ -73,6 +75,7 @@ impl UiPage {
             Self::Gpu => "GPU",
             Self::Services => "服务",
             Self::Diagnosis => "诊断",
+            Self::Factory => "出厂检测",
             Self::Reports => "报告",
             Self::Logs => "日志",
             Self::Remote => "远程",
@@ -85,9 +88,10 @@ impl UiPage {
             Self::Gpu => 1,
             Self::Services => 2,
             Self::Diagnosis => 3,
-            Self::Reports => 4,
-            Self::Logs => 5,
-            Self::Remote => 6,
+            Self::Factory => 4,
+            Self::Reports => 5,
+            Self::Logs => 6,
+            Self::Remote => 7,
         }
     }
 
@@ -97,9 +101,10 @@ impl UiPage {
             '2' => Some(Self::Gpu),
             '3' => Some(Self::Services),
             '4' => Some(Self::Diagnosis),
-            '5' => Some(Self::Reports),
-            '6' => Some(Self::Logs),
-            '7' => Some(Self::Remote),
+            '5' => Some(Self::Factory),
+            '6' => Some(Self::Reports),
+            '7' => Some(Self::Logs),
+            '8' => Some(Self::Remote),
             _ => None,
         }
     }
@@ -131,10 +136,64 @@ pub struct HostSnapshot {
     pub memory_used_mib: Option<u64>,
     #[serde(default)]
     pub memory_total_mib: Option<u64>,
+    /// 内存条规格摘要（dmidecode，需 root），如 "8×32GB DDR5 4800MT/s"。
+    #[serde(default)]
+    pub memory_modules: Option<String>,
+    /// 块设备盘点（lsblk）。空 vec 表示未采集。
+    #[serde(default)]
+    pub disks: Vec<DiskSnapshot>,
+    /// 网卡与当前地址（含 netplan 判定的 static/dhcp）。
+    #[serde(default)]
+    pub interfaces: Vec<NetInterfaceSnapshot>,
     #[serde(default)]
     pub status: HealthStatus,
     pub cpu_status: HealthStatus,
     pub memory_status: HealthStatus,
+}
+
+/// 块设备角色：系统盘（挂载 /）/ 数据盘 / 未识别。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiskKind {
+    System,
+    Data,
+    #[default]
+    Unknown,
+}
+
+/// 单块物理盘（lsblk TYPE=disk）的只读盘点。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DiskSnapshot {
+    /// sda / nvme0n1。
+    pub name: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub size_bytes: Option<u64>,
+    #[serde(default)]
+    pub kind: DiskKind,
+    /// 整盘文件系统签名（无分区直格式化的盘）。
+    #[serde(default)]
+    pub fstype: Option<String>,
+    #[serde(default)]
+    pub mountpoints: Vec<String>,
+    /// 是否干净：无分区、无文件系统签名、未挂载。None = 未判定。
+    #[serde(default)]
+    pub blank: Option<bool>,
+}
+
+/// 网卡当前状态（供出厂检测展示；net show 的运行时结构与它对应）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NetInterfaceSnapshot {
+    pub name: String,
+    #[serde(default)]
+    pub mac: Option<String>,
+    pub state: String,
+    #[serde(default)]
+    pub addresses: Vec<String>,
+    /// 配置方式：static / dhcp；None = 未判定。
+    #[serde(default)]
+    pub config_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1273,10 +1332,12 @@ mod tests {
 
     #[test]
     fn page_order_and_labels_are_stable() {
-        assert_eq!(UiPage::ALL.len(), 7);
+        assert_eq!(UiPage::ALL.len(), 8);
         assert_eq!(UiPage::from_digit('3'), Some(UiPage::Services));
-        assert_eq!(UiPage::from_digit('6'), Some(UiPage::Logs));
-        assert_eq!(UiPage::from_digit('7'), Some(UiPage::Remote));
+        assert_eq!(UiPage::from_digit('5'), Some(UiPage::Factory));
+        assert_eq!(UiPage::from_digit('6'), Some(UiPage::Reports));
+        assert_eq!(UiPage::from_digit('7'), Some(UiPage::Logs));
+        assert_eq!(UiPage::from_digit('8'), Some(UiPage::Remote));
         assert_eq!(UiPage::Overview.next(), UiPage::Gpu);
         assert_eq!(UiPage::Overview.previous(), UiPage::Remote);
         assert_eq!(DataSource::Demo.label(), "演示数据");

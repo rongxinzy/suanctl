@@ -187,6 +187,53 @@ pub fn render_netplan(iface: &str, mode: &NetplanMode) -> String {
     out
 }
 
+/// 从 netplan 配置判定网卡的配置方式："static" / "dhcp" / None（未判定）。
+/// 按文件名字典序扫描，第一个声明该网卡的 YAML 生效（netplan 合并同序）。
+pub fn netplan_mode(netplan_dir: &Path, iface: &str) -> Option<&'static str> {
+    let mut files: Vec<PathBuf> = fs::read_dir(netplan_dir)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "yaml"))
+        .collect();
+    files.sort();
+    for path in files {
+        if let Ok(content) = fs::read_to_string(&path) {
+            if let Some(mode) = netplan_mode_in_yaml(&content, iface) {
+                return Some(mode);
+            }
+        }
+    }
+    None
+}
+
+fn netplan_mode_in_yaml(content: &str, iface: &str) -> Option<&'static str> {
+    let marker = format!("{iface}:");
+    let mut in_iface = false;
+    let mut iface_indent = 0_usize;
+    for line in content.lines() {
+        let indent = line.len() - line.trim_start().len();
+        let trimmed = line.trim();
+        if in_iface {
+            if trimmed.is_empty() || indent > iface_indent {
+                if trimmed == "dhcp4: true" {
+                    return Some("dhcp");
+                }
+                if trimmed.starts_with("addresses:") {
+                    return Some("static");
+                }
+                continue;
+            }
+            in_iface = false;
+        }
+        if trimmed == marker && indent >= 2 {
+            in_iface = true;
+            iface_indent = indent;
+        }
+    }
+    None
+}
+
 /// 列出 /etc/netplan 中同样提到该网卡的其它 YAML（可能与本工具生成的配置合并冲突）。
 pub fn find_conflicting_files(netplan_dir: &Path, iface: &str) -> Vec<PathBuf> {
     let marker = format!("{iface}:");
@@ -392,6 +439,31 @@ mod tests {
         .expect("write");
         let conflicts = find_conflicting_files(&dir, "eno1");
         assert_eq!(conflicts, vec![dir.join("00-installer-config.yaml")]);
+        fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    #[test]
+    fn netplan_mode_detects_static_and_dhcp() {
+        let dir = std::env::temp_dir().join(format!(
+            "suanctl-netmode-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).expect("mkdir");
+        fs::write(
+            dir.join("00-installer-config.yaml"),
+            "network:\n  version: 2\n  ethernets:\n    eno1:\n      addresses:\n        - 172.18.6.119/24\n      routes:\n        - to: default\n          via: 172.18.6.1\n    eno2:\n      dhcp4: true\n",
+        )
+        .expect("write");
+        assert_eq!(netplan_mode(&dir, "eno1"), Some("static"));
+        assert_eq!(netplan_mode(&dir, "eno2"), Some("dhcp"));
+        assert_eq!(netplan_mode(&dir, "eno3"), None);
+        assert_eq!(
+            netplan_mode(Path::new("/nonexistent-netplan"), "eno1"),
+            None
+        );
         fs::remove_dir_all(&dir).expect("cleanup");
     }
 }

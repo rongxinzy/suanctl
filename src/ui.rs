@@ -92,7 +92,7 @@ pub fn draw(frame: &mut Frame<'_>, state: &AppState) {
             Some(filter) => format!(
                 " 过滤：{filter}（/ 重新编辑，Esc 清除）   ↑↓/PgUp/PgDn 滚动   r 刷新   e 导出   q 退出"
             ),
-            None => " 1-7/←→ 切页   ↑↓/PgUp/PgDn 滚动   / 过滤   r 刷新   b P2P测速   s 远程扫描   m 导出格式   e 导出   ? 帮助   q 退出".to_owned(),
+            None => " 1-8/←→ 切页   ↑↓/PgUp/PgDn 滚动   / 过滤   r 刷新   b P2P测速   s 远程扫描   m 导出格式   e 导出   ? 帮助   q 退出".to_owned(),
         }
     };
     frame.render_widget(
@@ -136,6 +136,10 @@ fn draw_page(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
         UiPage::Diagnosis => {
             let lines = filter_lines(diagnosis_lines(state), state.filter());
             draw_lines(frame, " 诊断 ", lines, scroll, area);
+        }
+        UiPage::Factory => {
+            let lines = filter_lines(factory_lines(state), state.filter());
+            draw_lines(frame, " 出厂检测 ", lines, scroll, area);
         }
         UiPage::Reports => draw_lines(frame, " 报告 ", report_lines(state), scroll, area),
         UiPage::Logs => {
@@ -650,6 +654,47 @@ fn finding_lines(finding: &DiagnosisFinding) -> Vec<Line<'static>> {
     lines
 }
 
+/// 出厂检测页：todo 清单风格，通过打勾，未通过/未采集不打勾。
+fn factory_lines(state: &AppState) -> Vec<Line<'static>> {
+    let checks = crate::factory::factory_checks(&state.snapshot);
+    let (passed, total) = crate::factory::checked_count(&checks);
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(
+                format!(" 验收清单：通过 {passed}/{total}"),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(if passed == total {
+                "（全部通过）"
+            } else {
+                ""
+            }),
+        ]),
+        Line::from(""),
+    ];
+    for check in &checks {
+        let (mark, style) = match check.status {
+            crate::factory::CheckStatus::Pass => ("☑", Style::default().fg(Color::Green)),
+            crate::factory::CheckStatus::Fail => ("☐", Style::default().fg(Color::Red)),
+            crate::factory::CheckStatus::Unknown => ("☐", Style::default().fg(Color::DarkGray)),
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!(" {mark} "), style),
+            Span::styled(
+                check.name.to_owned(),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(format!("  {}", check.detail)),
+        ]));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        " 说明：红 ☐ = 未通过；灰 ☐ = 未采集/未运行（不算不通过）。P2P 实测按 b 触发。",
+        Style::default().fg(Color::DarkGray),
+    )));
+    lines
+}
+
 fn report_lines(state: &AppState) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from("报告导出"),
@@ -1154,5 +1199,20 @@ mod tests {
                 .chars()
                 .any(|character| text.contains(character)));
         }
+    }
+
+    #[test]
+    fn factory_page_renders_checklist_with_todo_marks() {
+        let text = render(120, 30, UiPage::Factory, true);
+        // buffer 中 CJK 字符列间有空格，比较时去除
+        let compact: String = text.chars().filter(|c| *c != ' ').collect();
+        assert!(compact.contains("验收清单"), "应有清单汇总：{text}");
+        assert!(
+            text.contains('☑') || text.contains('☐'),
+            "应有勾选框符号：{text}"
+        );
+        // demo 快照：GPU 数量通过（☑），ECC 未采集（☐）。
+        assert!(compact.contains("GPU数量"));
+        assert!(compact.contains("ECC校验"));
     }
 }

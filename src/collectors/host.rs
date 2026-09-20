@@ -6,7 +6,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::domain::{HealthStatus, HostSnapshot};
+use crate::domain::{DiskKind, DiskSnapshot, HealthStatus, HostSnapshot, NetInterfaceSnapshot};
 
 use super::{CollectorError, HostCollector};
 
@@ -62,8 +62,219 @@ impl HostCollector for LinuxHostCollector {
                 "Linux 主机采集器只能在 Linux 上读取 /proc 和 /etc/os-release",
             ));
         }
-        parse_host_snapshot(&read_host_text(&self.root)?)
+        let mut snapshot = parse_host_snapshot(&read_host_text(&self.root)?)?;
+        if self.root == Path::new("/") {
+            enrich_host(&mut snapshot);
+        }
+        Ok(snapshot)
     }
+}
+
+/// 真机扩展盘点（fixture 根目录不触发）：块设备（lsblk）、内存条规格
+/// （dmidecode，需 root）、网卡与 IP。全部只读；任一失败只留空，不影响
+/// 基础快照。
+fn enrich_host(snapshot: &mut HostSnapshot) {
+    snapshot.disks = lsblk_disks();
+    snapshot.memory_modules = dmidecode_memory_summary();
+    snapshot.interfaces = interface_snapshots();
+}
+
+fn lsblk_disks() -> Vec<DiskSnapshot> {
+    let Ok(output) = std::process::Command::new("lsblk")
+        .args(["-b", "-J", "-o", "NAME,SIZE,TYPE,MODEL,FSTYPE,MOUNTPOINTS"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    parse_lsblk_disks(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn dmidecode_memory_summary() -> Option<String> {
+    let output = std::process::Command::new("dmidecode")
+        .args(["-t", "memory"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_dmidecode_memory(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn interface_snapshots() -> Vec<NetInterfaceSnapshot> {
+    crate::net::list_interfaces()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|iface| NetInterfaceSnapshot {
+            config_mode: crate::net::netplan_mode(Path::new("/etc/netplan"), &iface.name)
+                .map(str::to_owned),
+            name: iface.name,
+            mac: iface.mac,
+            state: iface.state,
+            addresses: iface.addresses,
+        })
+        .collect()
+}
+
+/// 解析 `lsblk -b -J -o NAME,SIZE,TYPE,MODEL,FSTYPE,MOUNTPOINTS`：只收
+/// TYPE=disk 的整盘；系统盘 = 子树内挂载了 /；干净 = 无分区、无文件系统
+/// 签名、未挂载。
+pub fn parse_lsblk_disks(json: &str) -> Vec<DiskSnapshot> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
+        return Vec::new();
+    };
+    let Some(devices) = value.get("blockdevices").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    devices
+        .iter()
+        .filter(|device| device.get("type").and_then(|t| t.as_str()) == Some("disk"))
+        .map(|device| {
+            let name = device
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_owned();
+            let model = device
+                .get("model")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_owned);
+            let size_bytes = device.get("size").and_then(|v| v.as_u64());
+            let fstype = device
+                .get("fstype")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned);
+            let mut mountpoints = mountpoints_of(device);
+            let mut has_child = false;
+            let mut child_has_fs = false;
+            // 子树需递归遍历：根分区常在嵌套的 LVM/DM 设备上（part → lvm → /）。
+            walk_children(device, &mut mountpoints, &mut has_child, &mut child_has_fs);
+            let kind = if mountpoints.iter().any(|m| m == "/") {
+                DiskKind::System
+            } else {
+                DiskKind::Data
+            };
+            let blank = fstype.is_none() && !has_child && !child_has_fs && mountpoints.is_empty();
+            DiskSnapshot {
+                name,
+                model,
+                size_bytes,
+                kind,
+                fstype,
+                mountpoints,
+                blank: Some(blank),
+            }
+        })
+        .collect()
+}
+
+fn walk_children(
+    device: &serde_json::Value,
+    mountpoints: &mut Vec<String>,
+    has_child: &mut bool,
+    child_has_fs: &mut bool,
+) {
+    let Some(children) = device.get("children").and_then(|v| v.as_array()) else {
+        return;
+    };
+    for child in children {
+        *has_child = true;
+        mountpoints.extend(mountpoints_of(child));
+        if child.get("fstype").and_then(|v| v.as_str()).is_some() {
+            *child_has_fs = true;
+        }
+        walk_children(child, mountpoints, has_child, child_has_fs);
+    }
+}
+
+fn mountpoints_of(device: &serde_json::Value) -> Vec<String> {
+    device
+        .get("mountpoints")
+        .and_then(|v| v.as_array())
+        .map(|list| {
+            list.iter()
+                .filter_map(|m| m.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 解析 `dmidecode -t memory`：汇总已安装内存条为
+/// "8×32GB DDR5 4800MT/s" 形式；空插槽与未知规格跳过，一个都没有返回 None。
+pub fn parse_dmidecode_memory(text: &str) -> Option<String> {
+    let mut modules: Vec<(String, String, String)> = Vec::new();
+    let mut in_device = false;
+    let mut size: Option<String> = None;
+    let mut memory_type: Option<String> = None;
+    let mut speed: Option<String> = None;
+    let flush = |size: &mut Option<String>,
+                 memory_type: &mut Option<String>,
+                 speed: &mut Option<String>,
+                 modules: &mut Vec<(String, String, String)>| {
+        if let Some(value) = size.take() {
+            if !value.contains("No Module") && !value.contains("Unknown") {
+                modules.push((
+                    value,
+                    memory_type.take().unwrap_or_default(),
+                    speed.take().unwrap_or_default(),
+                ));
+            }
+        }
+        memory_type.take();
+        speed.take();
+    };
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed == "Memory Device" {
+            flush(&mut size, &mut memory_type, &mut speed, &mut modules);
+            in_device = true;
+            continue;
+        }
+        if !in_device {
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("Size:") {
+            size = Some(rest.trim().to_owned());
+        } else if let Some(rest) = trimmed.strip_prefix("Type:") {
+            memory_type = Some(rest.trim().to_owned());
+        } else if let Some(rest) = trimmed.strip_prefix("Speed:") {
+            // "4800 MT/s" → "4800MT/s"
+            speed = Some(rest.trim().replace(' ', ""));
+        } else if trimmed.is_empty() {
+            flush(&mut size, &mut memory_type, &mut speed, &mut modules);
+            in_device = false;
+        }
+    }
+    flush(&mut size, &mut memory_type, &mut speed, &mut modules);
+    if modules.is_empty() {
+        return None;
+    }
+    let mut groups: std::collections::BTreeMap<(String, String, String), usize> =
+        std::collections::BTreeMap::new();
+    for module in &modules {
+        *groups.entry(module.clone()).or_insert(0) += 1;
+    }
+    let parts: Vec<String> = groups
+        .iter()
+        .map(|((size, memory_type, speed), count)| {
+            let spec = [memory_type.as_str(), speed.as_str()]
+                .into_iter()
+                .filter(|part| !part.is_empty() && *part != "Unknown")
+                .collect::<Vec<_>>()
+                .join(" ");
+            let size = size.replace(' ', "");
+            if spec.is_empty() {
+                format!("{count}×{size}")
+            } else {
+                format!("{count}×{size} {spec}")
+            }
+        })
+        .collect();
+    Some(parts.join(" + "))
 }
 
 pub fn read_host_text(root: &Path) -> Result<HostText, CollectorError> {
@@ -118,6 +329,9 @@ pub fn parse_host_snapshot(text: &HostText) -> Result<HostSnapshot, CollectorErr
         load_1m,
         memory_used_mib,
         memory_total_mib,
+        memory_modules: None,
+        disks: Vec::new(),
+        interfaces: Vec::new(),
         status: combine_status(cpu_status, memory_status),
         cpu_status,
         memory_status,
@@ -258,6 +472,7 @@ fn combine_status(left: HealthStatus, right: HealthStatus) -> HealthStatus {
 mod tests {
     use super::{parse_host_snapshot, HostText};
     use crate::collectors::HostCollector;
+    use crate::domain::DiskKind;
 
     const CPUINFO: &str = include_str!("fixtures/host_cpuinfo.txt");
     const MEMINFO: &str = include_str!("fixtures/host_meminfo.txt");
@@ -394,5 +609,100 @@ mod tests {
         let collector = super::LinuxHostCollector::with_root("/nonexistent-suanctl-root");
         let error = collector.collect_host().expect_err("missing root");
         assert_eq!(error.code, "read_failed");
+    }
+
+    #[test]
+    fn parse_lsblk_disks_marks_system_data_and_blank() {
+        let json = r#"{"blockdevices": [
+            {"name":"sda","size":480103981056,"type":"disk","model":"Samsung SSD 870 ","fstype":null,"mountpoints":[null],
+             "children":[
+                {"name":"sda1","size":1073741824,"type":"part","fstype":"vfat","mountpoints":["/boot/efi"]},
+                {"name":"sda2","size":479030000000,"type":"part","fstype":"ext4","mountpoints":["/"]}
+             ]},
+            {"name":"sdb","size":1920383410176,"type":"disk","model":null,"fstype":null,"mountpoints":[null]},
+            {"name":"sdc","size":1920383410176,"type":"disk","model":"ST2000NM","fstype":"xfs","mountpoints":[null],
+             "children":[
+                {"name":"sdc1","size":1920383000000,"type":"part","fstype":"xfs","mountpoints":["/data"]}
+             ]},
+            {"name":"sr0","size":1073741312,"type":"rom","model":null,"fstype":null,"mountpoints":[null]},
+            {"name":"loop0","size":67108864,"type":"loop","model":null,"fstype":"squashfs","mountpoints":["/snap/core/1"]}
+        ]}"#;
+        let disks = super::parse_lsblk_disks(json);
+        assert_eq!(disks.len(), 3, "rom/loop 不收");
+
+        let sda = &disks[0];
+        assert_eq!(sda.name, "sda");
+        assert_eq!(sda.model.as_deref(), Some("Samsung SSD 870"));
+        assert_eq!(sda.kind, DiskKind::System);
+        assert_eq!(sda.blank, Some(false));
+        assert!(sda.mountpoints.contains(&"/".to_owned()));
+
+        let sdb = &disks[1];
+        assert_eq!(sdb.kind, DiskKind::Data);
+        assert_eq!(sdb.blank, Some(true), "无分区无签名即干净");
+
+        let sdc = &disks[2];
+        assert_eq!(sdc.kind, DiskKind::Data);
+        assert_eq!(sdc.blank, Some(false), "有分区/文件系统不干净");
+    }
+
+    #[test]
+    fn parse_lsblk_disks_finds_root_on_nested_lvm() {
+        // 真实形态（172.18.4.199）：根分区在 part → lvm 的嵌套子树上。
+        let json = r#"{"blockdevices": [
+            {"name":"nvme0n1","size":4096805658624,"type":"disk","model":"BIWIN","fstype":null,"mountpoints":[null],
+             "children":[
+                {"name":"nvme0n1p1","size":1127219200,"type":"part","fstype":"vfat","mountpoints":["/boot/efi"]},
+                {"name":"nvme0n1p3","size":4093528506368,"type":"part","fstype":null,"mountpoints":[null],
+                 "children":[
+                    {"name":"ubuntu--vg-lv--0","size":4093527457792,"type":"lvm","fstype":"ext4","mountpoints":["/srv/data","/"]}
+                 ]}
+             ]}
+        ]}"#;
+        let disks = super::parse_lsblk_disks(json);
+        assert_eq!(disks.len(), 1);
+        let disk = &disks[0];
+        assert_eq!(disk.kind, DiskKind::System, "嵌套 LVM 上的 / 也要认");
+        assert_eq!(disk.blank, Some(false));
+        assert!(disk.mountpoints.contains(&"/".to_owned()));
+    }
+
+    #[test]
+    fn parse_dmidecode_memory_summarizes_installed_modules() {
+        let text = r#"
+Handle 0x0000, DMI type 16, 23 bytes
+Physical Memory Array
+	Maximum Capacity: 2 TB
+
+Handle 0x0001, DMI type 17, 84 bytes
+Memory Device
+	Array Handle: 0x0000
+	Total Width: 64 bits
+	Size: 32 GB
+	Form Factor: DIMM
+	Type: DDR5
+	Speed: 4800 MT/s
+	Manufacturer: Samsung
+	Part Number: M321R4GA3BB6-CQK
+
+Handle 0x0002, DMI type 17, 84 bytes
+Memory Device
+	Array Handle: 0x0000
+	Size: 32 GB
+	Type: DDR5
+	Speed: 4800 MT/s
+
+Handle 0x0003, DMI type 17, 84 bytes
+Memory Device
+	Array Handle: 0x0000
+	Size: No Module Installed
+	Type: Unknown
+	Speed: Unknown
+"#;
+        assert_eq!(
+            super::parse_dmidecode_memory(text).as_deref(),
+            Some("2×32GB DDR5 4800MT/s")
+        );
+        assert_eq!(super::parse_dmidecode_memory(""), None);
     }
 }

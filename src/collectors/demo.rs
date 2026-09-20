@@ -1,7 +1,8 @@
 use crate::domain::{
-    DashboardSnapshot, DataSource, DiagnosisFinding, EngineKind, GpuSnapshot, HealthStatus,
-    HostSnapshot, LocalProbeStatus, LogPatternMatch, LogSnapshot, LogSourceSnapshot, ProbeResult,
-    ProbeStatus, RemoteScanSnapshot, ServiceSnapshot,
+    DashboardSnapshot, DataSource, DiagnosisFinding, DiskKind, DiskSnapshot, EngineKind,
+    GpuSnapshot, HealthStatus, HostSnapshot, LocalProbeStatus, LogPatternMatch, LogSnapshot,
+    LogSourceSnapshot, NetInterfaceSnapshot, ProbeResult, ProbeStatus, RemoteScanSnapshot,
+    ServiceSnapshot,
 };
 
 /// TUI 开发/演示来源。此函数不读取系统状态，也不属于真实采集接口。
@@ -23,6 +24,34 @@ pub fn snapshot() -> DashboardSnapshot {
             status: HealthStatus::Healthy,
             cpu_status: HealthStatus::Healthy,
             memory_status: HealthStatus::Warning,
+            memory_modules: Some("2×32GB DDR5 4800MT/s".to_owned()),
+            disks: vec![
+                DiskSnapshot {
+                    name: "sda".to_owned(),
+                    model: Some("SAMSUNG MZ1L23T8HCLS-00A07".to_owned()),
+                    size_bytes: Some(3_840_755_982_336),
+                    kind: DiskKind::System,
+                    fstype: Some("ext4".to_owned()),
+                    mountpoints: vec!["/".to_owned()],
+                    blank: Some(false),
+                },
+                DiskSnapshot {
+                    name: "nvme0n1".to_owned(),
+                    model: Some("SAMSUNG MZQLB3T8HALS-00007".to_owned()),
+                    size_bytes: Some(3_840_755_982_336),
+                    kind: DiskKind::Data,
+                    fstype: None,
+                    mountpoints: Vec::new(),
+                    blank: Some(true),
+                },
+            ],
+            interfaces: vec![NetInterfaceSnapshot {
+                name: "eno1".to_owned(),
+                mac: Some("b4:05:5d:8f:aa:01".to_owned()),
+                state: "UP".to_owned(),
+                addresses: vec!["172.18.5.123/24".to_owned()],
+                config_mode: Some("static".to_owned()),
+            }],
         },
         gpus: vec![
             GpuSnapshot {

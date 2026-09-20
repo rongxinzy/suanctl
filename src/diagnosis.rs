@@ -665,6 +665,9 @@ mod tests {
                 status: HealthStatus::Healthy,
                 cpu_status: HealthStatus::Healthy,
                 memory_status: HealthStatus::Healthy,
+                memory_modules: None,
+                disks: Vec::new(),
+                interfaces: Vec::new(),
             },
             gpus: Vec::new(),
             services: Vec::new(),
@@ -1068,6 +1071,9 @@ mod tests {
             status: HealthStatus::Healthy,
             cpu_status: HealthStatus::Healthy,
             memory_status: HealthStatus::Healthy,
+            memory_modules: Some("2×32GB DDR5 4800MT/s".to_owned()),
+            disks: Vec::new(),
+            interfaces: Vec::new(),
         };
         let l20 = |index: u32, temperature: u32, power: f64| GpuSnapshot {
             index,

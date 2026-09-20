@@ -8,6 +8,7 @@ pub mod diagnosis;
 pub mod domain;
 pub mod engines;
 pub mod event;
+pub mod factory;
 pub mod net;
 pub mod storage;
 pub mod store;
