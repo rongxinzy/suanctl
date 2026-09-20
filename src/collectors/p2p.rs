@@ -672,7 +672,32 @@ impl<R: CommandRunner + Clone> ChainP2pCollector<R> {
     }
 }
 
+/// 去掉 ANSI CSI 转义序列。部分改名 smi 工具（如 DX-SMI）会给表头加
+/// 下划线/颜色（`\x1b[4m…\x1b[0m`），不剥离会导致首/末列标签解析失败、整列错位。
+fn strip_ansi_escapes(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(character) = chars.next() {
+        if character == '\x1b' {
+            if chars.next() == Some('[') {
+                // CSI：ESC [ 后跟参数字节，以 @-~ 范围内的最终字节结束。
+                for inner in chars.by_ref() {
+                    if ('@'..='~').contains(&inner) {
+                        break;
+                    }
+                }
+            }
+            // 非 CSI 的 ESC 序列同样丢弃。
+            continue;
+        }
+        out.push(character);
+    }
+    out
+}
+
 fn parse_gpu_matrix(output: &str, label_prefix: &str) -> Result<ParsedGpuMatrix, CollectorError> {
+    let output = strip_ansi_escapes(output);
+    let output = output.as_str();
     if output
         .to_ascii_lowercase()
         .contains("no devices were found")
@@ -955,6 +980,29 @@ mod tests {
             .find(|link| link.source_gpu == 1 && link.target_gpu == 2)
             .expect("GPU1 -> GPU2");
         assert_eq!(nvlink.nvlink, P2pCapabilityStatus::Supported);
+    }
+
+    #[test]
+    fn parses_matrix_with_ansi_decorated_header() {
+        // DX-SMI（改名 nvidia-smi）给表头加 ANSI 下划线：\x1b[4mGPU0…GPU7\x1b[0m。
+        // 不剥离会让首列标签解析失败、GPU0 整行丢失且其余列错位（真机 new8F6 实测）。
+        let topology = "\t\x1b[4mGPU0\tGPU1\tGPU2\x1b[0m\nGPU0\tX\tPIX\tPXB\nGPU1\tPIX\tX\tPXB\nGPU2\tPXB\tPXB\tX\n";
+        let matrix = parse_gpu_matrix(topology, "GPU").expect("ansi topology");
+        assert_eq!(matrix.gpu_indices, vec![0, 1, 2]);
+        assert_eq!(
+            matrix.values.get(&(0, 1)).map(String::as_str),
+            Some("PIX"),
+            "列不得错位"
+        );
+        assert_eq!(matrix.values.get(&(1, 0)).map(String::as_str), Some("PIX"));
+        assert_eq!(matrix.values.len(), 9);
+    }
+
+    #[test]
+    fn strip_ansi_escapes_removes_csi_sequences() {
+        assert_eq!(strip_ansi_escapes("\x1b[4mGPU0\x1b[0m"), "GPU0");
+        assert_eq!(strip_ansi_escapes("\x1b[1;31m红\x1b[m"), "红");
+        assert_eq!(strip_ansi_escapes("无转义"), "无转义");
     }
 
     #[test]

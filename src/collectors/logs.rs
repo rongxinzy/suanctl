@@ -63,7 +63,13 @@ struct LogPattern {
 fn patterns() -> Vec<LogPattern> {
     [
         ("xid", r"NVRM: Xid|Xid\s*\(", HealthStatus::Critical),
-        ("nvrm", r"\bNVRM\b", HealthStatus::Critical),
+        // NVRM 行很多是正常的（模块加载、GSP firmware loaded），只有携带错误语义的
+        // 才算异常；Rust regex 不支持负向断言，用枚举错误关键词。
+        (
+            "nvrm",
+            r"(?i)NVRM:.*(xid|error|fail|fault|fallen)",
+            HealthStatus::Critical,
+        ),
         (
             "gpu_fallen_off",
             r"GPU has fallen off|fallen off the bus",
@@ -82,7 +88,7 @@ fn patterns() -> Vec<LogPattern> {
         ("ecc", r"\bECC\b|uncorrectable", HealthStatus::Warning),
         (
             "rm_init",
-            r"GSP|RmInit|Failed to initialize NVML|Unknown Error",
+            r"RmInit|Failed to initialize NVML|Unknown Error|(?i)GSP.*(error|fail|fault)",
             HealthStatus::Warning,
         ),
     ]
@@ -579,6 +585,25 @@ mod tests {
     }
 
     #[test]
+    fn benign_nvrm_module_load_is_not_an_anomaly() {
+        // 真机 new8F6 的 dmesg：NVRM 模块加载行是正常日志，不得命中 nvrm 模式。
+        let runner = FakeRunner {
+            responses: std::collections::HashMap::from([
+                (
+                    "dmesg".to_owned(),
+                    output(
+                        "NVRM: loading NVIDIA UNIX Open Kernel Module for x86_64  595.58.03\nNVRM: GSP firmware loaded successfully\n",
+                    ),
+                ),
+                ("journalctl".to_owned(), output("kernel: boot ok\n")),
+            ]),
+        };
+        let snapshot = LinuxLogCollector::with_runner(runner).collect_logs();
+        assert_eq!(snapshot.status, HealthStatus::Healthy);
+        assert!(!snapshot.matches.iter().any(|m| m.pattern == "nvrm"));
+    }
+
+    #[test]
     fn clean_logs_are_healthy() {
         let runner = FakeRunner {
             responses: std::collections::HashMap::from([
@@ -689,7 +714,8 @@ mod tests {
                 "缺少模式 {expected}: {patterns:?}"
             );
         }
-        // 命中统计：Xid 1 行；NVRM 4 行（Xid/fallen off/RmInit/GSP 行均含 NVRM）。
+        // 命中统计：Xid 1 行；NVRM 3 行（Xid/fallen off/RmInit 行；
+        // "GSP firmware loaded successfully" 是正常日志，不计入）。
         let xid = snapshot
             .matches
             .iter()
@@ -711,9 +737,9 @@ mod tests {
             .find(|m| m.pattern == "rm_init")
             .unwrap();
         assert_eq!(xid.count, 1);
-        assert_eq!(nvrm.count, 4);
+        assert_eq!(nvrm.count, 3);
         assert_eq!(pcie.count, 2);
-        assert_eq!(rm_init.count, 2);
+        assert_eq!(rm_init.count, 1);
     }
 
     #[test]
