@@ -108,7 +108,14 @@ suanctl config
 suanctl doctor --config suanctl.toml
 suanctl save
 suanctl history [--limit 10] [--show <id>] [--json]
+suanctl net show                     # 网卡清单 + netplan 配置（只读）
+suanctl net set                      # 交互式配置 IP（选网卡 → DHCP/静态 → 预览 → 确认）
+suanctl net set eno1 --address 192.168.1.10/24 --gateway 192.168.1.1 --dns 114.114.114.114
 ```
+
+`net set` 生成 `/etc/netplan/60-suanctl-<iface>.yaml` 并执行 `netplan apply`（需 root）；
+写入前备份 `/etc/netplan` 到 `~/.suanctl/netplan-backup/<时间戳>/`，apply 失败自动回滚。
+`--dry-run` 只打印 YAML，`--yes` 跳过确认（脚本化用）。
 
 `p2p --benchmark`、`doctor --p2p-benchmark` 和 `report --p2p-benchmark` 执行 NVBandwidth GPU 负载。
 

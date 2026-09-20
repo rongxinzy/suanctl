@@ -26,7 +26,16 @@ use suanctl::{
 };
 
 #[derive(Debug, Parser)]
-#[command(name = "suanctl", version, about = "智算服务器诊断与监控工具")]
+#[command(name = "suanctl", version, verbatim_doc_comment)]
+/// 智算服务器诊断与监控工具
+///
+/// 常用流程：
+///   suanctl tui            中文终端界面（按 ? 查看按键帮助）
+///   suanctl doctor         本机诊断能力自检
+///   suanctl report --format markdown --output report.md   导出证据报告
+///   suanctl net set        交互式配置网卡 IP（netplan）
+///
+/// 子命令详细说明与示例：suanctl help <子命令>
 struct Cli {
     /// suanctl.toml 配置文件路径；缺省使用内置默认
     #[arg(long, global = true)]
@@ -41,12 +50,26 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     /// 启动中文终端界面
+    ///
+    /// 页面：概览 / GPU / 服务 / 平台 / 远程（←→ 或数字键切换）。
+    /// 按键：q 退出，? 帮助，r 刷新，b 运行 P2P 基准，e 导出报告，
+    /// m 切换报告格式，/ 过滤，s 远程主机选择，j/k 滚动。
+    #[command(verbatim_doc_comment)]
     Tui {
         /// 显式使用演示数据，不读取真实主机
         #[arg(long)]
         demo: bool,
     },
     /// 输出本机诊断能力状态
+    ///
+    /// 检查采集能力（GPU/平台/日志/存储）、可用工具与权限，
+    /// 用于部署后自检：哪些能力可用、哪些因缺工具/权限降级。
+    ///
+    /// 示例：
+    ///   suanctl doctor
+    ///   suanctl doctor --json
+    ///   suanctl doctor --p2p-benchmark   # 附带 NVBandwidth 实测
+    #[command(verbatim_doc_comment)]
     Doctor {
         /// 输出机器可读 JSON
         #[arg(long)]
@@ -56,11 +79,22 @@ enum Command {
         p2p_benchmark: bool,
     },
     /// 导出一次完整证据报告
+    ///
+    /// 汇聚主机/GPU/服务/平台/日志/诊断结果输出到文件；
+    /// 输出文件已存在时拒绝覆盖，除非加 --force。
+    ///
+    /// 示例：
+    ///   suanctl report --format markdown --output suanctl-report.md
+    ///   suanctl report --format json --output report.json --p2p-benchmark
+    #[command(verbatim_doc_comment)]
     Report {
+        /// 报告格式：json / jsonl / markdown
         #[arg(long, value_enum)]
         format: CliReportFormat,
+        /// 输出文件路径；已存在时拒绝覆盖（除非 --force）
         #[arg(long)]
         output: std::path::PathBuf,
+        /// 允许覆盖已存在的输出文件
         #[arg(long)]
         force: bool,
         /// 显式运行 NVBandwidth，并将实测 P2P 速率写入报告
@@ -68,6 +102,14 @@ enum Command {
         p2p_benchmark: bool,
     },
     /// 查看 GPU P2P 能力、拓扑及可选实测速率
+    ///
+    /// 能力矩阵与拓扑路径来自驱动查询（只读）；--benchmark 会跑
+    /// 内置 CUDA Samples p2pBandwidthLatencyTest（未内置时回退 NVBandwidth）。
+    ///
+    /// 示例：
+    ///   suanctl p2p
+    ///   suanctl p2p --benchmark
+    #[command(verbatim_doc_comment)]
     P2p {
         /// 显式运行 NVBandwidth GPU-to-GPU 负载
         #[arg(long)]
@@ -77,20 +119,44 @@ enum Command {
         json: bool,
     },
     /// 采集系统日志并检测异常模式（dmesg / journalctl / syslog）
+    ///
+    /// 内置 Xid / NVRM / PCIe AER / ECC / NVLink 等异常模式；
+    /// 自定义模式见 suanctl.toml 的日志模式配置。
+    ///
+    /// 示例：
+    ///   suanctl logs
+    ///   suanctl logs --json
+    #[command(verbatim_doc_comment)]
     Logs {
         /// 输出机器可读 JSON
         #[arg(long)]
         json: bool,
     },
     /// 校验并展示配置文件
+    ///
+    /// 展示最终生效配置（远程主机、日志模式、插件等）；
+    /// 配置错误时给出具体字段错误。
+    ///
+    /// 示例：suanctl config --config suanctl.toml
+    #[command(verbatim_doc_comment)]
     Config {
         /// 输出机器可读 JSON
         #[arg(long)]
         json: bool,
     },
     /// 采集并保存一次快照到本地库（SurrealDB）
+    ///
+    /// 保存后用 history / log-events 查询；库位置见全局 --data-dir。
+    #[command(verbatim_doc_comment)]
     Save,
     /// 扫描远程设备（~/.ssh/config 免密主机；先检测权限后降级）
+    ///
+    /// 无 sudo 权限时自动降级为只读采集，不会因此失败。
+    ///
+    /// 示例：
+    ///   suanctl remote
+    ///   suanctl remote --host gpu-node-1
+    #[command(verbatim_doc_comment)]
     Remote {
         /// 只扫描指定别名
         #[arg(long)]
@@ -100,6 +166,12 @@ enum Command {
         json: bool,
     },
     /// 查询本地历史快照
+    ///
+    /// 示例：
+    ///   suanctl history --since 7d --status warning
+    ///   suanctl history --search OOM
+    ///   suanctl history --show snapshots:xxx --json
+    #[command(verbatim_doc_comment)]
     History {
         /// 最近 N 条（默认 10）
         #[arg(long, default_value_t = 10)]
@@ -142,6 +214,11 @@ enum Command {
         json: bool,
     },
     /// 运行内置 NCCL all_reduce 基准（需构建时编译进 NCCL 支持）
+    ///
+    /// 构建时检测到 nccl.h + libnccl 才会编入二进制，否则命令提示不可用。
+    ///
+    /// 示例：suanctl nccl --gpus 8 --bytes 268435456 --iterations 50
+    #[command(verbatim_doc_comment)]
     Nccl {
         /// 参与 GPU 数（缺省全部）
         #[arg(long)]
@@ -154,6 +231,15 @@ enum Command {
         iterations: Option<i32>,
     },
     /// 部署 suanctl 自身到免密主机并作为 worker 执行本地模式命令
+    ///
+    /// 通过 ~/.ssh/config 别名把同版本二进制部署到对端；
+    /// 不带 COMMAND 时仅部署并显示状态，带 COMMAND 时在远程执行该子命令。
+    ///
+    /// 示例：
+    ///   suanctl agent gpu-node-1
+    ///   suanctl agent gpu-node-1 doctor --json
+    ///   suanctl agent gpu-node-1 report --format markdown --output /tmp/r.md
+    #[command(verbatim_doc_comment)]
     Agent {
         /// ssh config 主机别名（如 wfk8smaster3）
         #[arg(value_name = "HOST")]
@@ -172,12 +258,22 @@ enum Command {
         check_sudo: bool,
     },
     /// 输出本机身份信息（hostname / 用户 / 版本 / 内置能力），供 agent 协商使用
+    ///
+    /// 示例：suanctl identity --json
+    #[command(verbatim_doc_comment)]
     Identity {
         /// 输出机器可读 JSON
         #[arg(long)]
         json: bool,
     },
     /// 查询日志异常事件（跨快照）
+    ///
+    /// 事件在 save 时从日志异常展开入库。
+    ///
+    /// 示例：
+    ///   suanctl log-events --pattern xid --limit 50
+    ///   suanctl log-events --stats
+    #[command(verbatim_doc_comment)]
     LogEvents {
         /// 按异常模式过滤（如 xid、nvrm、pcie_bus_error）
         #[arg(long)]
@@ -191,6 +287,61 @@ enum Command {
         /// 输出机器可读 JSON
         #[arg(long)]
         json: bool,
+    },
+    /// 快速配置网络（netplan）：交互式设置静态 IP / DHCP，免手写 YAML
+    ///
+    /// net show 只读查看；net set 生成 /etc/netplan/60-suanctl-<iface>.yaml
+    /// 并执行 netplan apply（需 root），写入前自动备份、失败自动回滚。
+    #[command(verbatim_doc_comment)]
+    Net {
+        #[command(subcommand)]
+        action: NetAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum NetAction {
+    /// 列出网卡、当前地址与 netplan 配置文件（只读）
+    #[command(verbatim_doc_comment)]
+    Show {
+        /// 输出机器可读 JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// 配置网卡 IP：缺省参数时逐项交互询问
+    ///
+    /// 交互流程：选网卡 → DHCP/静态 → 地址/网关/DNS → 预览 → 确认。
+    /// 应用前备份 /etc/netplan 到 ~/.suanctl/netplan-backup/<时间戳>/；
+    /// netplan apply 失败自动回滚。SSH 会话内修改当前网卡可能断连。
+    ///
+    /// 示例：
+    ///   suanctl net set                              # 交互式
+    ///   suanctl net set eno1 --dhcp --yes
+    ///   suanctl net set eno1 --address 192.168.1.10/24 --gateway 192.168.1.1 --dns 114.114.114.114
+    ///   suanctl net set eno1 --address 192.168.1.10/24 --dry-run   # 只预览 YAML
+    #[command(verbatim_doc_comment)]
+    Set {
+        /// 网卡名（如 eno1）；缺省交互选择
+        #[arg(value_name = "IFACE")]
+        iface: Option<String>,
+        /// 使用 DHCP
+        #[arg(long, conflicts_with = "address")]
+        dhcp: bool,
+        /// 静态地址 CIDR（如 192.168.1.10/24）
+        #[arg(long)]
+        address: Option<String>,
+        /// 默认网关（如 192.168.1.1）
+        #[arg(long)]
+        gateway: Option<String>,
+        /// DNS，逗号分隔（如 114.114.114.114,8.8.8.8）
+        #[arg(long)]
+        dns: Option<String>,
+        /// 跳过确认直接应用（仍需 root）
+        #[arg(long)]
+        yes: bool,
+        /// 只打印将生成的 netplan YAML，不写入不应用
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -483,6 +634,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     print_log_events(&list);
                 }
             }
+        }
+        Command::Net { action } => {
+            run_net(action)?;
         }
         Command::History {
             limit,
@@ -1364,4 +1518,247 @@ fn shorten_line(value: &str, max: usize) -> String {
     } else {
         value.to_owned()
     }
+}
+
+fn run_net(action: NetAction) -> Result<(), Box<dyn Error>> {
+    match action {
+        NetAction::Show { json } => run_net_show(json),
+        NetAction::Set {
+            iface,
+            dhcp,
+            address,
+            gateway,
+            dns,
+            yes,
+            dry_run,
+        } => run_net_set(iface, dhcp, address, gateway, dns, yes, dry_run),
+    }
+}
+
+fn run_net_show(json: bool) -> Result<(), Box<dyn Error>> {
+    let interfaces = suanctl::net::list_interfaces()?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&interfaces)?);
+        return Ok(());
+    }
+    println!("网卡清单：");
+    for iface in &interfaces {
+        let mac = iface.mac.as_deref().unwrap_or("MAC 未知");
+        let addresses = if iface.addresses.is_empty() {
+            "（无地址）".to_owned()
+        } else {
+            iface.addresses.join(", ")
+        };
+        println!(
+            "  {:<10} {:<7} {}  {}",
+            iface.name,
+            iface.state.to_uppercase(),
+            mac,
+            addresses
+        );
+    }
+    let netplan_dir = std::path::Path::new("/etc/netplan");
+    let configs: Vec<String> = std::fs::read_dir(netplan_dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .filter(|name| name.ends_with(".yaml"))
+                .collect()
+        })
+        .unwrap_or_default();
+    if configs.is_empty() {
+        println!("netplan 配置：未发现 /etc/netplan/*.yaml");
+    } else {
+        println!("netplan 配置：{}", configs.join(", "));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_net_set(
+    iface: Option<String>,
+    dhcp: bool,
+    address: Option<String>,
+    gateway: Option<String>,
+    dns: Option<String>,
+    yes: bool,
+    dry_run: bool,
+) -> Result<(), Box<dyn Error>> {
+    use std::io::IsTerminal;
+    use suanctl::net;
+    let interfaces = net::list_interfaces()?;
+    if interfaces.is_empty() {
+        return Err("未发现可用网卡（/sys/class/net 为空）".into());
+    }
+    let interactive = std::io::stdin().is_terminal();
+
+    // 1. 网卡：参数优先，否则交互选择。
+    let iface = match iface {
+        Some(name) => {
+            if interfaces.iter().all(|item| item.name != name) {
+                let known: Vec<&str> = interfaces.iter().map(|item| item.name.as_str()).collect();
+                return Err(format!("网卡 {name} 不存在；可用：{}", known.join(", ")).into());
+            }
+            name
+        }
+        None => {
+            if !interactive {
+                return Err("非交互环境必须指定 IFACE 参数（或配合 --dry-run 预览）".into());
+            }
+            println!("可用网卡：");
+            for (index, item) in interfaces.iter().enumerate() {
+                let addresses = if item.addresses.is_empty() {
+                    "（无地址）".to_owned()
+                } else {
+                    item.addresses.join(", ")
+                };
+                println!(
+                    "  {}. {:<10} {:<7} {}",
+                    index + 1,
+                    item.name,
+                    item.state.to_uppercase(),
+                    addresses
+                );
+            }
+            let choice = prompt("请选择网卡编号")?;
+            let index: usize = choice
+                .trim()
+                .parse()
+                .ok()
+                .filter(|index: &usize| *index >= 1 && *index <= interfaces.len())
+                .ok_or("编号无效")?;
+            interfaces[index - 1].name.clone()
+        }
+    };
+    if let Some(current) = interfaces.iter().find(|item| item.name == iface) {
+        println!(
+            "当前 {iface}：状态 {}，地址 {}",
+            current.state.to_uppercase(),
+            if current.addresses.is_empty() {
+                "（无）".to_owned()
+            } else {
+                current.addresses.join(", ")
+            }
+        );
+    }
+
+    // 2. 模式：--dhcp / --address 优先，否则交互询问。
+    let mode = if dhcp {
+        net::NetplanMode::Dhcp
+    } else if let Some(address) = address {
+        net::NetplanMode::Static(net::StaticConfig {
+            address: net::validate_cidr(&address)?,
+            gateway: gateway.map(|value| net::validate_ip(&value)).transpose()?,
+            dns: parse_dns_list(dns.as_deref())?,
+        })
+    } else if interactive {
+        let choice = prompt("DHCP 自动获取还是静态地址？(d/s)")?;
+        if choice.trim().eq_ignore_ascii_case("d") {
+            net::NetplanMode::Dhcp
+        } else {
+            let address = loop {
+                let input = prompt("静态地址 CIDR（如 192.168.1.10/24）")?;
+                match net::validate_cidr(&input) {
+                    Ok(value) => break value,
+                    Err(error) => println!("{error}，请重输"),
+                }
+            };
+            let gateway = loop {
+                let input = prompt("默认网关（可留空）")?;
+                if input.trim().is_empty() {
+                    break None;
+                }
+                match net::validate_ip(&input) {
+                    Ok(value) => break Some(value),
+                    Err(error) => println!("{error}，请重输"),
+                }
+            };
+            let dns = loop {
+                let input = prompt("DNS，逗号分隔（可留空）")?;
+                if input.trim().is_empty() {
+                    break Vec::new();
+                }
+                match parse_dns_list(Some(&input)) {
+                    Ok(value) => break value,
+                    Err(error) => println!("{error}，请重输"),
+                }
+            };
+            net::NetplanMode::Static(net::StaticConfig {
+                address,
+                gateway,
+                dns,
+            })
+        }
+    } else {
+        return Err("非交互环境需要 --dhcp 或 --address 指定配置方式".into());
+    };
+
+    // 3. 预览与冲突提示。
+    let yaml = net::render_netplan(&iface, &mode);
+    println!("\n将生成 /etc/netplan/60-suanctl-{iface}.yaml：\n\n{yaml}");
+    let netplan_dir = std::path::Path::new("/etc/netplan");
+    let conflicts = net::find_conflicting_files(netplan_dir, &iface);
+    if !conflicts.is_empty() {
+        println!("注意：以下既有配置也包含 {iface}，netplan 合并时数值以文件名靠后者为准：");
+        for path in &conflicts {
+            println!("  - {}", path.display());
+        }
+    }
+    if dry_run {
+        println!("（dry-run：未写入、未应用）");
+        return Ok(());
+    }
+
+    // 4. 确认并应用。
+    if !net::is_root() {
+        return Err("写入 /etc/netplan 与执行 netplan apply 需要 root，请用 sudo 运行".into());
+    }
+    if !yes {
+        if !interactive {
+            return Err("非交互环境需要 --yes 确认应用".into());
+        }
+        if std::env::var_os("SSH_CONNECTION").is_some() {
+            println!("警告：检测到 SSH 会话，修改 {iface} 可能中断当前连接。");
+        }
+        let confirm = prompt("确认应用以上配置？(y/N)")?;
+        if !confirm.trim().eq_ignore_ascii_case("y") {
+            println!("已取消。");
+            return Ok(());
+        }
+    }
+    let backup_dir = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".suanctl")
+        .join("netplan-backup")
+        .join(chrono::Local::now().format("%Y%m%d-%H%M%S").to_string());
+    let (file, backup) = net::apply_netplan(netplan_dir, &backup_dir, &iface, &yaml)?;
+    println!(
+        "已写入 {}（备份在 {}）并执行 netplan apply。",
+        file.display(),
+        backup.display()
+    );
+    Ok(())
+}
+
+fn parse_dns_list(value: Option<&str>) -> Result<Vec<String>, Box<dyn Error>> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(|item| suanctl::net::validate_ip(item).map_err(|error| error.into()))
+        .collect()
+}
+
+fn prompt(question: &str) -> Result<String, Box<dyn Error>> {
+    use std::io::Write;
+    print!("{question}：");
+    std::io::stdout().flush()?;
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    Ok(input.trim().to_owned())
 }
