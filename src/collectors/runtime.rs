@@ -81,6 +81,10 @@ impl RuntimeCollector {
             });
             self.plugin = Box::new(crate::collectors::plugin::ShellPluginCollector::new(dir));
         }
+        if let Ok(endpoints) = config.to_configured_endpoints() {
+            // 配置已在校验阶段拦截非法值；此处仅为运行时装配。
+            self = self.with_configured_endpoints(endpoints);
+        }
         self
     }
 

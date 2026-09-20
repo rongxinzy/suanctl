@@ -16,12 +16,28 @@ pub struct SuanctlConfig {
     /// 远程主机清单（为远程巡检预留；当前版本仅校验与展示）。
     #[serde(default)]
     pub hosts: Vec<HostConfig>,
+    /// 显式声明的推理服务端点（服务发现与 suanctl bench 都会使用）。
+    #[serde(default)]
+    pub endpoints: Vec<EndpointConfig>,
     /// 日志采集扩展。
     #[serde(default)]
     pub logs: LogsConfig,
     /// 插件采集。
     #[serde(default)]
     pub plugins: PluginsConfig,
+}
+
+/// 显式声明的推理服务端点。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndpointConfig {
+    pub name: String,
+    /// 引擎：llama_cpp / vllm / sglang。
+    pub engine: String,
+    /// 端点 base URL，如 http://127.0.0.1:8080。
+    pub url: String,
+    /// 模型 id（可选；bench 缺省时查 /v1/models）。
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,6 +126,7 @@ impl SuanctlConfig {
                 });
             }
         }
+        self.to_configured_endpoints()?;
         for pattern in &self.logs.extra_patterns {
             if pattern.name.trim().is_empty() {
                 return Err(ConfigError {
@@ -133,6 +150,36 @@ impl SuanctlConfig {
         Ok(())
     }
 
+    /// 转换为服务发现 / bench 可用的显式端点列表，并校验字段。
+    pub fn to_configured_endpoints(
+        &self,
+    ) -> Result<Vec<crate::engines::ConfiguredEndpoint>, ConfigError> {
+        self.endpoints
+            .iter()
+            .map(|endpoint| {
+                if endpoint.name.trim().is_empty() {
+                    return Err(ConfigError {
+                        message: "endpoints[].name 不能为空".to_owned(),
+                    });
+                }
+                let engine = parse_engine_kind(&endpoint.engine).ok_or_else(|| ConfigError {
+                    message: format!(
+                        "endpoints[{}].engine 未知：{}（可选 llama_cpp/vllm/sglang）",
+                        endpoint.name, endpoint.engine
+                    ),
+                })?;
+                let url = endpoint.url.trim();
+                reqwest::Url::parse(url).map_err(|error| ConfigError {
+                    message: format!("endpoints[{}].url 无效：{url}（{error}）", endpoint.name),
+                })?;
+                let mut configured =
+                    crate::engines::ConfiguredEndpoint::new(endpoint.name.trim(), engine, url);
+                configured.model = endpoint.model.clone();
+                Ok(configured)
+            })
+            .collect()
+    }
+
     /// 转换为日志采集器可用的附加模式列表。
     pub fn to_log_patterns(&self) -> Result<Vec<ConfiguredPattern>, ConfigError> {
         self.logs
@@ -146,6 +193,15 @@ impl SuanctlConfig {
                 })
             })
             .collect()
+    }
+}
+
+fn parse_engine_kind(value: &str) -> Option<crate::domain::EngineKind> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "llama_cpp" | "llamacpp" | "llama.cpp" => Some(crate::domain::EngineKind::LlamaCpp),
+        "vllm" => Some(crate::domain::EngineKind::Vllm),
+        "sglang" => Some(crate::domain::EngineKind::Sglang),
+        _ => None,
     }
 }
 
@@ -219,6 +275,37 @@ user = "root"
         assert_eq!(patterns[1].severity, HealthStatus::Warning);
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn parses_and_validates_endpoints() {
+        let config: SuanctlConfig = toml::from_str(
+            r#"
+[[endpoints]]
+name = "本地 llama.cpp"
+engine = "llama_cpp"
+url = "http://127.0.0.1:8080"
+model = "qwen"
+"#,
+        )
+        .expect("parsed");
+        config.validate().expect("valid");
+        let endpoints = config.to_configured_endpoints().expect("converted");
+        assert_eq!(endpoints.len(), 1);
+        assert_eq!(endpoints[0].engine, crate::domain::EngineKind::LlamaCpp);
+        assert_eq!(endpoints[0].model.as_deref(), Some("qwen"));
+
+        let bad: SuanctlConfig = toml::from_str(
+            "[[endpoints]]\nname = \"x\"\nengine = \"tensorrt\"\nurl = \"http://a:1\"\n",
+        )
+        .expect("parsed");
+        let error = bad.validate().expect_err("unknown engine");
+        assert!(error.message.contains("engine 未知"));
+
+        let bad_url: SuanctlConfig =
+            toml::from_str("[[endpoints]]\nname = \"x\"\nengine = \"vllm\"\nurl = \":://\"\n")
+                .expect("parsed");
+        assert!(bad_url.validate().is_err());
     }
 
     #[test]

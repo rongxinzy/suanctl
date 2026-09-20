@@ -29,6 +29,9 @@
   上行汇聚点（最近公共上游桥），并对跨 NUMA 的 P2P 链路给出诊断告警。
 - 内置 NCCL all_reduce 基准（`suanctl nccl`，构建时检测到 nccl.h + libnccl 才编译）。
 - JSON、JSONL、Markdown 证据报告。
+- 推理端点压测：`suanctl bench` 对 OpenAI 兼容端点（llama.cpp / vLLM / SGLang）
+  发并发 /v1/chat/completions 负载，报告吞吐（tok/s）与延迟分位数；端点支持
+  配置文件 `[[endpoints]]` 显式声明与自动发现（进程/容器 + 探活）。
 
 默认采集路径使用 Linux sysfs、procfs、固定只读命令和 GET 探针。P2P/NCCL 实测由
 显式操作触发（`p2p --benchmark` / `nccl` / TUI `b` 键）。
@@ -111,6 +114,9 @@ suanctl history [--limit 10] [--show <id>] [--json]
 suanctl net show                     # 网卡清单 + netplan 配置（只读）
 suanctl net set                      # 交互式配置 IP（选网卡 → DHCP/静态 → 预览 → 确认）
 suanctl net set eno1 --address 192.168.1.10/24 --gateway 192.168.1.1 --dns 114.114.114.114
+suanctl bench --list                 # 列出可压测的推理端点（探活后）
+suanctl bench                        # 自动发现第一个可达端点并压测
+suanctl bench --endpoint http://127.0.0.1:8080 --prompts 32 --concurrency 8
 ```
 
 `net set` 生成 `/etc/netplan/60-suanctl-<iface>.yaml` 并执行 `netplan apply`（需 root）；
@@ -223,6 +229,13 @@ dir = "/etc/suanctl/plugins"   # 缺省 ~/.suanctl/plugins
 name = "k1"
 address = "172.18.5.123"
 user = "root"
+
+# 显式声明推理服务端点（服务发现与 suanctl bench 共用）
+[[endpoints]]
+name = "本地 llama.cpp"
+engine = "llama_cpp"          # llama_cpp / vllm / sglang
+url = "http://127.0.0.1:8080"
+model = "qwen"                # 可选；缺省查 /v1/models
 ```
 
 示例插件见 `examples/plugins/sensors.sh`；`suanctl config --config <path>` 可校验并展示配置。

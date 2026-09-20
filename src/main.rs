@@ -288,6 +288,44 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// 对推理服务端点做并发压测（OpenAI 兼容 /v1/chat/completions）
+    ///
+    /// 会向目标端点发送真实推理请求（显式操作，非只读采集）。
+    /// 端点来源优先级：--endpoint > 配置文件 [[endpoints]] > 自动发现
+    /// （进程/容器 + 探针确认可达）。
+    ///
+    /// 示例：
+    ///   suanctl bench --list                          # 只列出可压测端点
+    ///   suanctl bench                                 # 自动发现第一个可达端点
+    ///   suanctl bench --endpoint http://127.0.0.1:8080 --prompts 32 --concurrency 8
+    ///   suanctl bench --endpoint 127.0.0.1:8080 --model qwen --json
+    #[command(verbatim_doc_comment)]
+    Bench {
+        /// 目标端点（如 http://127.0.0.1:8080）；缺省从配置/自动发现选择
+        #[arg(long)]
+        endpoint: Option<String>,
+        /// 模型 id；缺省查询 /v1/models 取第一个
+        #[arg(long)]
+        model: Option<String>,
+        /// 总请求数（默认 16）
+        #[arg(long, default_value_t = 16)]
+        prompts: usize,
+        /// 并发数（默认 4）
+        #[arg(long, default_value_t = 4)]
+        concurrency: usize,
+        /// 每请求最大生成 token 数（默认 128）
+        #[arg(long, default_value_t = 128)]
+        max_tokens: u32,
+        /// 单请求超时秒数（默认 120）
+        #[arg(long, default_value_t = 120)]
+        timeout: u64,
+        /// 只列出可压测端点，不执行压测
+        #[arg(long)]
+        list: bool,
+        /// 输出机器可读 JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// 快速配置网络（netplan）：交互式设置静态 IP / DHCP，免手写 YAML
     ///
     /// net show 只读查看；net set 生成 /etc/netplan/60-suanctl-<iface>.yaml
@@ -637,6 +675,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
         Command::Net { action } => {
             run_net(action)?;
+        }
+        Command::Bench {
+            endpoint,
+            model,
+            prompts,
+            concurrency,
+            max_tokens,
+            timeout,
+            list,
+            json,
+        } => {
+            run_bench_command(
+                &config,
+                endpoint,
+                model,
+                prompts,
+                concurrency,
+                max_tokens,
+                timeout,
+                list,
+                json,
+            )?;
         }
         Command::History {
             limit,
@@ -1761,4 +1821,119 @@ fn prompt(question: &str) -> Result<String, Box<dyn Error>> {
     let mut input = String::new();
     std::io::stdin().read_line(&mut input)?;
     Ok(input.trim().to_owned())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_bench_command(
+    config: &SuanctlConfig,
+    endpoint: Option<String>,
+    model: Option<String>,
+    prompts: usize,
+    concurrency: usize,
+    max_tokens: u32,
+    timeout: u64,
+    list: bool,
+    json: bool,
+) -> Result<(), Box<dyn Error>> {
+    use suanctl::bench;
+
+    // 显式指定端点：直接压测。
+    if let Some(endpoint) = endpoint {
+        let report = bench::run_bench(&bench::BenchConfig {
+            endpoint,
+            model,
+            prompts,
+            concurrency,
+            max_tokens,
+            timeout_secs: timeout,
+        })?;
+        print_bench_report(&report, json);
+        return Ok(());
+    }
+
+    // 否则：配置文件端点（优先）+ 自动发现，探活后取候选。
+    let configured = config.to_configured_endpoints().unwrap_or_default();
+    let candidates = bench::discover_candidates(configured);
+    if candidates.is_empty() {
+        if list {
+            println!("未发现可压测的推理端点（可 --endpoint 显式指定，或配置 [[endpoints]]）。");
+            return Ok(());
+        }
+        return Err(
+            "未发现可压测的推理端点。请用 --endpoint 显式指定，或在 suanctl.toml 配置 [[endpoints]]。"
+                .into(),
+        );
+    }
+    if list {
+        if json {
+            println!("{}", serde_json::to_string_pretty(&candidates)?);
+        } else {
+            println!("可压测端点（探针可达）：");
+            for service in &candidates {
+                println!(
+                    "  {:<16} {:<10} {}  模型：{}",
+                    service.name,
+                    service.engine.label(),
+                    service.endpoint.as_deref().unwrap_or(""),
+                    service.model.as_deref().unwrap_or("未知")
+                );
+            }
+        }
+        return Ok(());
+    }
+    let chosen = &candidates[0];
+    if candidates.len() > 1 {
+        eprintln!(
+            "发现 {} 个可达端点，使用第一个：{}（{}）；其余可用 --endpoint 指定。",
+            candidates.len(),
+            chosen.name,
+            chosen.endpoint.as_deref().unwrap_or("")
+        );
+    }
+    let report = bench::run_bench(&bench::BenchConfig {
+        endpoint: chosen.endpoint.clone().expect("候选必有端点"),
+        model: model.or_else(|| chosen.model.clone()),
+        prompts,
+        concurrency,
+        max_tokens,
+        timeout_secs: timeout,
+    })?;
+    print_bench_report(&report, json);
+    Ok(())
+}
+
+fn print_bench_report(report: &suanctl::bench::BenchReport, json: bool) {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(report).expect("序列化压测报告")
+        );
+        return;
+    }
+    println!("压测结果：{}（模型 {}）", report.endpoint, report.model);
+    println!(
+        "  请求：总数 {} · 并发 {} · 成功 {} · 失败 {}",
+        report.prompts, report.concurrency, report.succeeded, report.failed
+    );
+    println!("  总耗时：{:.2}s", report.wall_seconds);
+    match report.tokens_per_second {
+        Some(tps) => println!(
+            "  吞吐：{:.1} tok/s（共 {} completion tokens）",
+            tps, report.completion_tokens_total
+        ),
+        None => println!(
+            "  吞吐：响应未带 usage，总吞吐未知；单请求均值 {}",
+            report
+                .per_request_tokens_per_second
+                .map(|value| format!("{value:.1} tok/s"))
+                .unwrap_or_else(|| "未知".to_owned())
+        ),
+    }
+    println!(
+        "  延迟 ms：avg {:.0} · p50 {:.0} · p95 {:.0} · max {:.0}",
+        report.latency_avg_ms, report.latency_p50_ms, report.latency_p95_ms, report.latency_max_ms
+    );
+    if !report.errors.is_empty() {
+        println!("  失败样例：{}", report.errors.join("；"));
+    }
 }

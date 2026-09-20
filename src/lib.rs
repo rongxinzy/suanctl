@@ -1,6 +1,7 @@
 //! suanctl 的可测试模块骨架。
 
 pub mod app;
+pub mod bench;
 pub mod collectors;
 pub mod config;
 pub mod diagnosis;
