@@ -299,13 +299,21 @@ fn render_markdown(report: &EvidenceReport) -> String {
         ),
         s.host.memory_status,
     ));
-    out.push_str("\n## GPU\n\n| GPU | 名称 | PCI | 温度 | 利用率 | 显存 | 状态 |\n| --- | --- | --- | --- | --- | --- | --- |\n");
+    out.push_str("\n## GPU\n\n| GPU | 名称 | PCI | PCIe 链路 | 温度 | 利用率 | 显存 | 状态 |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n");
+    let pci_devices: &[crate::domain::PciDeviceSnapshot] = s
+        .platform
+        .as_ref()
+        .map_or(&[], |platform| platform.pci_devices.as_slice());
     for gpu in &s.gpus {
+        let link = crate::collectors::pcie::gpu_pcie_device(gpu, pci_devices)
+            .and_then(crate::collectors::pcie::link_brief)
+            .unwrap_or_else(|| "未知".to_owned());
         out.push_str(&format!(
-            "| {} | {} | {} | {} | {} | {}/{} MiB | {} |\n",
+            "| {} | {} | {} | {} | {} | {} | {}/{} MiB | {} |\n",
             gpu.index,
             esc(&gpu.name),
             esc(unknown(gpu.pci_address.as_ref())),
+            esc(&link),
             unknown(gpu.temperature_celsius),
             unknown(gpu.utilization_percent),
             unknown(gpu.memory_used_mib),
@@ -314,7 +322,7 @@ fn render_markdown(report: &EvidenceReport) -> String {
         ));
     }
     if s.gpus.is_empty() {
-        out.push_str("| - | 未发现 GPU 或采集不可用 | 未知 | 未知 | 未知 | 未知 | 未知 |\n");
+        out.push_str("| - | 未发现 GPU 或采集不可用 | 未知 | 未知 | 未知 | 未知 | 未知 | 未知 |\n");
     }
     out.push_str("\n## 服务\n\n| 服务 | 引擎 | 端点 | 可达 | 模型 | 状态 |\n| --- | --- | --- | --- | --- | --- |\n");
     for service in &s.services {

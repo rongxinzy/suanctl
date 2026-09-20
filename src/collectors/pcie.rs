@@ -431,6 +431,71 @@ pub fn parse_link_width(value: &str) -> Option<u32> {
         .filter(|width| *width > 0)
 }
 
+/// PCIe 链路紧凑描述：`Gen4 x8`；当前协商低于设备最大能力时标注
+/// `Gen1 x8（最大 Gen4 x8）`。两端都未知时返回 None，调用方自行兜底。
+pub fn link_brief(device: &PciDeviceSnapshot) -> Option<String> {
+    let current = link_half_brief(
+        device.current_link_speed.as_deref(),
+        device.current_link_width.as_deref(),
+    );
+    let maximum = link_half_brief(
+        device.max_link_speed.as_deref(),
+        device.max_link_width.as_deref(),
+    );
+    match (current, maximum) {
+        (None, None) => None,
+        (Some(current), None) => Some(current),
+        (None, Some(maximum)) => Some(format!("最大 {maximum}")),
+        (Some(current), Some(maximum)) if current == maximum => Some(current),
+        (Some(current), Some(maximum)) => Some(format!("{current}（最大 {maximum}）")),
+    }
+}
+
+/// TUI 窄列用的更短形式：降级时写成 `Gen1 x8→Gen4 x8`。
+pub fn link_brief_compact(device: &PciDeviceSnapshot) -> Option<String> {
+    let current = link_half_brief(
+        device.current_link_speed.as_deref(),
+        device.current_link_width.as_deref(),
+    );
+    let maximum = link_half_brief(
+        device.max_link_speed.as_deref(),
+        device.max_link_width.as_deref(),
+    );
+    match (current, maximum) {
+        (None, None) => None,
+        (Some(current), None) => Some(current),
+        (None, Some(maximum)) => Some(format!("≤{maximum}")),
+        (Some(current), Some(maximum)) if current == maximum => Some(current),
+        (Some(current), Some(maximum)) => Some(format!("{current}→{maximum}")),
+    }
+}
+
+fn link_half_brief(speed: Option<&str>, width: Option<&str>) -> Option<String> {
+    let generation = pcie_generation(speed);
+    let lanes = width.and_then(parse_link_width);
+    match (generation, lanes) {
+        (None, None) => None,
+        (generation, lanes) => Some(format!(
+            "{} {}",
+            generation.map_or_else(|| "Gen?".to_owned(), |g| format!("Gen{g}")),
+            lanes.map_or_else(|| "x?".to_owned(), |w| format!("x{w}")),
+        )),
+    }
+}
+
+/// GPU 快照 → PCIe 设备清单条目（pci_address 归一化后按 BDF 匹配）。
+/// 地址缺失或清单对不上时返回 None，不伪造。
+pub fn gpu_pcie_device<'a>(
+    gpu: &crate::domain::GpuSnapshot,
+    devices: &'a [PciDeviceSnapshot],
+) -> Option<&'a PciDeviceSnapshot> {
+    let bdf = crate::collectors::gpu::normalize_pci_address(gpu.pci_address.as_deref()?)
+        .to_ascii_lowercase();
+    devices
+        .iter()
+        .find(|device| device.bdf.eq_ignore_ascii_case(&bdf))
+}
+
 fn infer_parent_bdf(path: &Path, bdf: &str) -> Option<String> {
     let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let components = canonical
@@ -731,9 +796,10 @@ pub fn accelerator_topology_lines(
         let normalized = bdf.to_ascii_lowercase();
         gpus.iter()
             .find(|gpu| {
-                gpu.pci_address
-                    .as_deref()
-                    .is_some_and(|address| address.to_ascii_lowercase() == normalized)
+                gpu.pci_address.as_deref().is_some_and(|address| {
+                    crate::collectors::gpu::normalize_pci_address(address).to_ascii_lowercase()
+                        == normalized
+                })
             })
             .map(|gpu| format!("GPU{} {}", gpu.index, gpu.name))
     };
@@ -915,6 +981,9 @@ fn render_topo_node(
             {
                 label.push_str(&format!(" {}", shorten_str(name, 24)));
             }
+            if let Some(brief) = link_brief(device) {
+                label.push_str(&format!(" [{brief}]"));
+            }
             label
         }
         None => bdf,
@@ -1088,9 +1157,10 @@ mod tests {
 
     use super::super::command::{CommandOutput, CommandRequest, CommandRunner};
     use super::{
-        accelerator_topology_lines, class_role, enrich_p2p_upstream, is_valid_bdf,
-        parse_link_width, parse_lspci_acs, parse_lspci_details, parse_resource_windows,
-        pcie_generation, scan_sysfs_devices, theoretical_bandwidth_mb_s, LinuxPcieCollector,
+        accelerator_topology_lines, class_role, enrich_p2p_upstream, gpu_pcie_device, is_valid_bdf,
+        link_brief, link_brief_compact, parse_link_width, parse_lspci_acs, parse_lspci_details,
+        parse_resource_windows, pcie_generation, scan_sysfs_devices, theoretical_bandwidth_mb_s,
+        LinuxPcieCollector,
     };
     use crate::collectors::CollectorError;
     use crate::domain::{GpuSnapshot, HealthStatus, PciDeviceRole, PciDeviceSnapshot, PciMmioKind};
@@ -1575,6 +1645,76 @@ mod tests {
         let devices = vec![topo_device("0000:eb:00.0", None, "0x020000")];
         assert!(accelerator_topology_lines(&devices, &[], 64).is_empty());
         assert!(accelerator_topology_lines(&[], &[], 64).is_empty());
+    }
+
+    #[test]
+    fn link_brief_covers_match_degrade_and_unknown() {
+        // 协商值 == 最大能力：只显示当前。
+        let mut device = topo_device("0000:86:00.0", None, "0x030200");
+        device.current_link_speed = Some("16.0 GT/s".to_owned());
+        device.current_link_width = Some("x8".to_owned());
+        device.max_link_speed = Some("16.0 GT/s".to_owned());
+        device.max_link_width = Some("x8".to_owned());
+        assert_eq!(link_brief(&device).as_deref(), Some("Gen4 x8"));
+        assert_eq!(link_brief_compact(&device).as_deref(), Some("Gen4 x8"));
+
+        // 空闲降速：标注最大能力。
+        device.current_link_speed = Some("2.5 GT/s".to_owned());
+        assert_eq!(
+            link_brief(&device).as_deref(),
+            Some("Gen1 x8（最大 Gen4 x8）")
+        );
+        assert_eq!(
+            link_brief_compact(&device).as_deref(),
+            Some("Gen1 x8→Gen4 x8")
+        );
+
+        // 完全未知。
+        let unknown = topo_device("0000:87:00.0", None, "0x030200");
+        assert_eq!(link_brief(&unknown), None);
+        assert_eq!(link_brief_compact(&unknown), None);
+    }
+
+    #[test]
+    fn gpu_pcie_device_matches_normalized_bdf() {
+        // nvidia-smi 可能给 8 位 domain 的地址（00000000:86:00.0），须归一化后匹配。
+        let devices = vec![topo_device("0000:86:00.0", None, "0x030200")];
+        let gpu = topo_gpu(0, "00000000:86:00.0", "RTX 4060 Ti");
+        assert_eq!(
+            gpu_pcie_device(&gpu, &devices).map(|d| d.bdf.as_str()),
+            Some("0000:86:00.0")
+        );
+        let missing = topo_gpu(1, "0000:99:00.0", "RTX 4060 Ti");
+        assert!(gpu_pcie_device(&missing, &devices).is_none());
+        let no_address = topo_gpu(2, "", "");
+        let mut no_address = no_address;
+        no_address.pci_address = None;
+        assert!(gpu_pcie_device(&no_address, &devices).is_none());
+    }
+
+    #[test]
+    fn accelerator_topology_annotates_link_brief() {
+        // switch 口与端点都带链路信息时，节点标注 [GenW xN]。
+        let mut upstream = topo_device("0000:81:00.0", None, "0x060400");
+        upstream.current_link_speed = Some("16.0 GT/s".to_owned());
+        upstream.current_link_width = Some("x16".to_owned());
+        upstream.max_link_speed = Some("16.0 GT/s".to_owned());
+        upstream.max_link_width = Some("x16".to_owned());
+        let mut endpoint = topo_device("0000:86:00.0", Some("0000:81:00.0"), "0x030200");
+        endpoint.current_link_speed = Some("2.5 GT/s".to_owned());
+        endpoint.current_link_width = Some("x8".to_owned());
+        endpoint.max_link_speed = Some("16.0 GT/s".to_owned());
+        endpoint.max_link_width = Some("x8".to_owned());
+        // GPU 地址带 8 位 domain（nvidia-smi 常见），端点标签也应命中 GPU 名。
+        let gpus = vec![topo_gpu(0, "00000000:86:00.0", "RTX 4060 Ti")];
+        let lines = accelerator_topology_lines(&[upstream, endpoint], &gpus, 64);
+        assert_eq!(
+            lines,
+            vec![
+                "0000:81:00.0 [Gen4 x16]",
+                "└─ 0000:86:00.0 [Gen1 x8（最大 Gen4 x8）] ← GPU0 RTX 4060 Ti",
+            ]
+        );
     }
 
     #[test]

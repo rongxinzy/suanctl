@@ -198,11 +198,17 @@ fn gpu_table(
             ])],
         );
     }
-    if area_width >= 120 {
+    if area_width >= 128 {
+        let pci_devices: &[crate::domain::PciDeviceSnapshot] = state
+            .snapshot
+            .platform
+            .as_ref()
+            .map_or(&[], |platform| platform.pci_devices.as_slice());
         let header = vec![
             "编号",
             "名称",
             "PCI 地址",
+            "链路",
             "NUMA",
             "温度",
             "利用率",
@@ -214,8 +220,9 @@ fn gpu_table(
         ];
         let widths = vec![
             Constraint::Length(6),
-            Constraint::Length(20),
-            Constraint::Length(15),
+            Constraint::Length(18),
+            Constraint::Length(14),
+            Constraint::Length(16),
             Constraint::Length(5),
             Constraint::Length(7),
             Constraint::Length(8),
@@ -223,7 +230,7 @@ fn gpu_table(
             Constraint::Length(12),
             Constraint::Length(8),
             Constraint::Length(8),
-            Constraint::Length(14),
+            Constraint::Length(12),
         ];
         let rows = state
             .snapshot
@@ -248,10 +255,14 @@ fn gpu_table(
                         }),
                     None => "--".into(),
                 };
+                let link = crate::collectors::pcie::gpu_pcie_device(gpu, pci_devices)
+                    .and_then(crate::collectors::pcie::link_brief_compact)
+                    .unwrap_or_else(|| "--".into());
                 let mut cells = vec![
                     Cell::from(format!("GPU{}", gpu.index)),
-                    Cell::from(shorten(&gpu.name, 20)),
+                    Cell::from(shorten(&gpu.name, 18)),
                     Cell::from(opt_ref(&gpu.pci_address)),
+                    Cell::from(link),
                     Cell::from(opt(gpu.numa_node)),
                     Cell::from(temperature),
                     Cell::from(utilization),
