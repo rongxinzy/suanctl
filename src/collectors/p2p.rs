@@ -17,7 +17,8 @@ use crate::domain::{
 };
 
 use super::command::{
-    CommandRequest, CommandRunner, ProcessCommandRunner, DEFAULT_STDERR_LIMIT, DEFAULT_STDOUT_LIMIT,
+    CommandOutput, CommandRequest, CommandRunner, ProcessCommandRunner, DEFAULT_STDERR_LIMIT,
+    DEFAULT_STDOUT_LIMIT,
 };
 use super::CollectorError;
 
@@ -405,44 +406,57 @@ impl<R: CommandRunner> NvidiaP2pCollector<R> {
         }
     }
 
+    /// 运行一个 SMI 拓扑命令（nvidia-smi 或其改名体 querygpu）。
+    fn run_smi(&self, program: &str, args: &[&str]) -> Result<CommandOutput, CollectorError> {
+        let mut request = CommandRequest::new(program, args.iter().copied());
+        request.timeout = self.timeout;
+        request.stdout_limit = self.stdout_limit;
+        request.stderr_limit = self.stderr_limit;
+        self.runner.run(&request)
+    }
+
     fn run_matrix(
         &self,
         args: &[&str],
         capability: &str,
     ) -> Result<ParsedGpuMatrix, CollectionIssue> {
-        let mut request = CommandRequest::new("nvidia-smi", args.iter().copied());
-        request.timeout = self.timeout;
-        request.stdout_limit = self.stdout_limit;
-        request.stderr_limit = self.stderr_limit;
-        let output = self.runner.run(&request).map_err(|error| {
-            p2p_issue(
-                "nvidia_smi_unavailable",
-                HealthStatus::Unavailable,
-                format!("P2P {capability}采集不可用：{}", error.message),
-            )
-        })?;
+        // nvidia-smi 不存在时回退改名体 querygpu（与 GPU 采集链一致）；
+        // 仅在命令无法启动时回退，命令本身失败（非零退出）不重试。
+        let (output, tool) = match self.run_smi("nvidia-smi", args) {
+            Ok(output) => (output, "nvidia-smi"),
+            Err(primary_error) => match self.run_smi("querygpu", args) {
+                Ok(output) => (output, "querygpu"),
+                Err(_) => {
+                    return Err(p2p_issue(
+                        "nvidia_smi_unavailable",
+                        HealthStatus::Unavailable,
+                        format!(
+                            "P2P {capability}采集不可用（nvidia-smi/querygpu）：{}",
+                            primary_error.message
+                        ),
+                    ))
+                }
+            },
+        };
         if output.timed_out {
             return Err(p2p_issue(
                 "nvidia_smi_topo_timeout",
                 HealthStatus::Unknown,
-                format!("nvidia-smi P2P {capability} 查询超时"),
+                format!("{tool} P2P {capability} 查询超时"),
             ));
         }
         if output.stdout_truncated || output.stderr_truncated {
             return Err(p2p_issue(
                 "nvidia_smi_topo_output_too_large",
                 HealthStatus::Unknown,
-                format!("nvidia-smi P2P {capability} 输出超过安全上限"),
+                format!("{tool} P2P {capability} 输出超过安全上限"),
             ));
         }
         if !output.success {
             return Err(p2p_issue(
                 "nvidia_smi_topo_failed",
                 HealthStatus::Unknown,
-                format!(
-                    "nvidia-smi P2P {capability} 查询失败：{}",
-                    output.stderr.trim()
-                ),
+                format!("{tool} P2P {capability} 查询失败：{}", output.stderr.trim()),
             ));
         }
         parse_gpu_matrix(&output.stdout, "GPU").map_err(|error| {
@@ -980,6 +994,32 @@ mod tests {
             .find(|link| link.source_gpu == 1 && link.target_gpu == 2)
             .expect("GPU1 -> GPU2");
         assert_eq!(nvlink.nvlink, P2pCapabilityStatus::Supported);
+    }
+
+    #[test]
+    fn falls_back_to_querygpu_when_nvidia_smi_missing() {
+        // 真机 172.18.4.199 只有改名体 querygpu：拓扑与能力矩阵应照常采集。
+        let runner = FixtureRunner {
+            handler: Arc::new(|request| {
+                if request.program == "querygpu" {
+                    if request.args == ["topo", "-m"] {
+                        Ok(output(TOPOLOGY))
+                    } else {
+                        Ok(output(P2P_OK))
+                    }
+                } else {
+                    Err(CollectorError::new(
+                        "command",
+                        "spawn_failed",
+                        format!("{} 不存在", request.program),
+                    ))
+                }
+            }),
+        };
+        let collection = NvidiaP2pCollector::with_runner(runner).collect_topology();
+        assert!(collection.issues.is_empty(), "{:?}", collection.issues);
+        assert_eq!(collection.snapshot.gpu_indices, vec![0, 1, 2]);
+        assert_eq!(collection.snapshot.links.len(), 6);
     }
 
     #[test]
